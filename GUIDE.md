@@ -1,0 +1,256 @@
+# Improving TDD — a Walkthrough
+
+A port of Jakub Nabrdalik's *Improving your Test Driven Development in 45 minutes* from Java/Spock to TypeScript/NestJS. The talk's thesis is simple and uncomfortable: most TDD failures are failures of level. Class-level tests break on every refactor and rarely prove behaviour. Whole-system tests are slow, flaky, and expensive. The right unit of test is **the module** — the bounded context. Test its public facade against real in-memory collaborators, mock only the facades of *other* modules, and keep I/O tests for crucial paths only. This guide walks the eleven principles from the talk and points at the running demo under `apps/library/`.
+
+- Talk (video): <https://www.youtube.com/watch?v=2vEoL3Irgiw>
+- Slides: <https://jakubn.gitlab.io/improvingtdd/>
+- Attribution: Jakub Nabrdalik
+
+## How to run this
+
+```bash
+pnpm install
+pnpm test:unit
+pnpm test:integration    # requires Docker (testcontainers spins up postgres:16)
+pnpm --filter library start:dev
+```
+
+---
+
+## Principle 1 — Don't test too low
+
+![Too low — class and method tests](./.claude/screenshots/classDiagram2.jpg)
+
+When you write a test per class and per method, every refactor turns red even when behaviour is unchanged. Coverage climbs to 100% but the tests pin implementation, not requirements. You stop refactoring because the tests punish you for it.
+
+The demo never has a `catalog.repository.spec.ts` or a `loan.entity.spec.ts`. There are no tests on private helpers inside a facade. When the repository changes shape — in-memory `Map` today, Drizzle tomorrow — no facade test moves.
+
+**Code pointer:** `apps/library/src/catalog/catalog.facade.spec.ts:26-148` — one spec file for the whole Catalog module. Every test drives through the public facade. Internal helpers like `updateCopyStatus` (`apps/library/src/catalog/catalog.facade.ts:88-97`) have no dedicated test; they are covered by the facade tests that depend on them.
+
+---
+
+## Principle 2 — Don't test too high
+
+![End-to-end tests are slow](./.claude/screenshots/sloth.jpg)
+
+Full-stack tests against real HTTP and a real database catch integration bugs but they cost you seconds per case. A thousand of those and you wait 45 minutes for the suite. Developers stop running it locally, CI becomes the only signal, and feedback collapses.
+
+The demo reserves full-stack testing for *crucial paths only* — one integration test per module plus the return-loan atomicity test. Every other scenario — corner cases, error paths, the reservation DSL — runs in memory at facade level.
+
+Captured vitest output from `pnpm test:unit`:
+
+```
+✓ |unit| src/catalog/catalog.facade.spec.ts  (11 tests) 4ms
+✓ |unit| src/membership/membership.facade.spec.ts  (12 tests) 4ms
+✓ |unit| src/lending/lending.reservations.spec.ts  (2 tests) 3ms
+✓ |unit| src/lending/lending.facade.spec.ts  (15 tests) 8ms
+
+ Test Files  4 passed (4)
+      Tests  40 passed (40)
+   Duration  959ms (transform 203ms, setup 0ms, collect 1.99s, tests 19ms)
+```
+
+Forty tests, nineteen milliseconds of actual assertions. The rest is cold-start overhead that disappears in watch mode.
+
+**Code pointer:** `apps/library/test/lending.return-loan.integration.spec.ts` is the only place a Postgres testcontainer shows up for Lending — everything else is in memory.
+
+---
+
+## Principle 3 — Test your modules
+
+![One module, all its own data](./.claude/screenshots/single_module.png)
+
+A module is a bounded context: it owns its data, exposes one public API, and has a clear set of collaborators. That is the natural unit of test. Not a class, not the whole system — the module. A module is also the thing you might one day extract into a microservice; test it like you'd test that microservice.
+
+The demo has exactly three modules — `catalog`, `membership`, `lending`. Each one owns its repositories, its types, its facade. Each one has a single entry point via its barrel file, and that barrel exports only the facade class and the DTOs its signatures mention.
+
+**Code pointer:** `apps/library/src/catalog/index.ts:1-16` — the public surface of the Catalog module is this file. Everything else is internal.
+
+---
+
+## Principle 4 — Module as black box, in milliseconds
+
+![Road stretching into the distance](./.claude/screenshots/road.jpg)
+
+Inside a module, test the facade. Every flow, every corner case, every error path — as fast as the JS engine can run. No I/O, no Docker, no containers booting. You save the I/O tests for the crucial happy path and a small set of scenarios that prove the real adapter works.
+
+The Catalog facade has eleven tests covering happy paths, error cases, and idempotency — all through the public API, none touching a database. Adding a new scenario is three lines in a describe block; you do not think about test infrastructure.
+
+**Code pointer:** `apps/library/src/catalog/catalog.facade.spec.ts:104-147` — error-case tests (unknown ISBN, unknown book when registering a copy, unknown copy on status flips, duplicate ISBN) all run as fast as the happy paths because there is nothing slow to reach for.
+
+---
+
+## Principle 5 — In-memory implementations, not mocks
+
+![Films — data that stays in memory](./.claude/screenshots/films1.png)
+
+Give each module a real in-memory implementation of its repository interface. Unit tests use *that*, not a mock. Real logic runs against real state — just not persisted state. You keep mocks for boundaries outside the module's control.
+
+**The in-memory repo** (real code from `apps/library/src/catalog/in-memory-catalog.repository.ts:4-36`):
+
+```ts
+export class InMemoryCatalogRepository implements CatalogRepository {
+  private readonly booksById = new Map<BookId, BookDto>();
+  private readonly copiesById = new Map<CopyId, CopyDto>();
+
+  async saveBook(book: BookDto): Promise<void> {
+    this.booksById.set(book.bookId, book);
+  }
+
+  async findBookByIsbn(isbn: Isbn): Promise<BookDto | undefined> {
+    for (const book of this.booksById.values()) {
+      if (book.isbn === isbn) return book;
+    }
+    return undefined;
+  }
+  // …saveCopy, findCopyById, listBooks
+}
+```
+
+**What `vi.mock` would have looked like** (do not do this):
+
+```ts
+vi.mock('./catalog.repository.js', () => ({
+  CatalogRepository: vi.fn().mockImplementation(() => ({
+    saveBook: vi.fn().mockResolvedValue(undefined),
+    findBookByIsbn: vi.fn().mockResolvedValue(undefined),
+    findBookById: vi.fn().mockResolvedValue({ bookId: 'b1', isbn: '...' }),
+    saveCopy: vi.fn().mockResolvedValue(undefined),
+    findCopyById: vi.fn().mockResolvedValue(undefined),
+    listBooks: vi.fn().mockResolvedValue([]),
+  })),
+}));
+```
+
+**Why the first is preferred:** the in-memory repo runs real logic against real state, so a test like "add a book then list it" actually proves the facade wires `saveBook` and `listBooks` correctly. The mocked version only proves that `vi.fn` was called — you have to script every return value, and the moment the facade changes shape the mocks silently disagree with reality. In-memory doubles turn state into a first-class test input; mocks turn it into a puppet show.
+
+### Bonus — transactions across functions
+
+Some operations mutate state across multiple repository calls inside a single module and must succeed or fail as a unit. In the demo, `returnLoan` does two things atomically within Lending: marks the loan returned, and — if a pending reservation exists — records its fulfillment. The `LoanReturned` and `ReservationFulfilled` events are staged with those writes so they only fire once the transaction commits. See `apps/library/src/lending/lending.facade.ts:58-75`.
+
+The way we keep that unit-of-work testable without a database is a `TransactionalContext` abstraction. Repos accept it as a parameter and route writes through it. The in-memory implementation (`apps/library/src/lending/in-memory-transactional-context.ts:8-48`) stages writes into a scratch buffer and applies them only when `run()` resolves; on throw, the buffer is discarded and the `Map`-backed stores and event bus are untouched. The Drizzle implementation (`apps/library/src/lending/drizzle-transactional-context.ts:11-55`) threads a `tx` handle through a `db.transaction` block; Postgres handles commit and rollback. Same interface, same atomicity contract — the unit test survives the substrate swap.
+
+This is scoped to **one module's own data**. The cross-module call `catalog.markCopyAvailable(...)` lives *outside* `tx.run(...)` — cross-module consistency is via happens-before ordering and events, never a shared transaction (see principle 7). That separation also avoids concurrent-connection deadlocks against the same pool; the tx reserves one connection for Lending's writes, and Catalog's write runs independently.
+
+---
+
+## Principle 6 — Don't let I/O escape the module
+
+![A car-sharing diagram — modules with clear seams](./.claude/screenshots/carsharing.png)
+
+If your facade accepts a repository as a method parameter, every consumer will inject a mock and start asserting on repository calls. The test suite drifts back to implementation-level. The fix: expose a factory that wires the facade with its own in-memory defaults and accepts overrides only for injected *collaborators from other modules*.
+
+In the demo, `createCatalogFacade()` is the factory. Its only overrides are a seed for deterministic ids and (in Lending) other modules' facades and the event bus. The repository is never in the signature — callers cannot reach it.
+
+**Code pointer:** `apps/library/src/catalog/catalog.configuration.ts` — the factory function. Notice the test (`apps/library/src/catalog/catalog.facade.spec.ts:22-24`) takes no repository argument; it could not even if it wanted to.
+
+---
+
+## Principle 7 — Module boundaries: mock other modules' facades
+
+![One module, its dependencies explicit](./.claude/screenshots/ArticleModuleDependencies.png)
+
+When module A depends on module B, unit tests of A mock B's *facade* — never B's internals, never A's own repository. Mocking other modules' public APIs forces behaviour-centric assertions across the seam ("if membership says ineligible, no loan is recorded"). Mocking your own repo just lets you assert on implementation details.
+
+The Lending module depends on `CatalogFacade` and `MembershipFacade`. Its tests stand up plain hand-written fakes for those:
+
+```ts
+// apps/library/src/lending/lending.facade.spec.ts:39-100
+interface FakeCatalog { /* only the methods Lending calls */ }
+function fakeCatalogFacade(): FakeCatalog { /* Map-backed, no vi.fn */ }
+
+interface FakeMembership { /* setEligibility + checkEligibility */ }
+function fakeMembershipFacade(): FakeMembership { /* … */ }
+```
+
+And in the scene builder (`apps/library/src/lending/lending.facade.spec.ts:112-143`):
+
+```ts
+const facade = createLendingFacade({
+  catalogFacade: catalog as unknown as CatalogFacade,
+  membershipFacade: membership as unknown as MembershipFacade,
+  eventBus: bus,
+  newId: sequentialIds('loan'),
+  clock: fixedClock,
+});
+```
+
+**`LoanRepository` is NOT mocked.** Lending owns its loans; the real `InMemoryLoanRepository` and `InMemoryReservationRepository` are behind the facade, exercising real logic. Only Catalog and Membership — the other modules — are faked.
+
+**Code pointer:** `apps/library/src/lending/lending.facade.spec.ts:35-143` for the fakes and scene builder; `apps/library/src/lending/lending.facade.spec.ts:190-222` for a borrow-rejects-when-ineligible test that proves the fake membership gates real Lending state.
+
+---
+
+## Principle 8 — Keep information to minimum
+
+![Antoine de Saint-Exupéry on perfection](./.claude/screenshots/snow.jpg)
+
+Every line in a test should earn its place. If you can delete a field and the test still proves the same requirement, delete it. What is explicit is crucial; what is implicit is defaulted. Readers learn what matters by what you bothered to write.
+
+The sample-data helpers default everything a requirement does not care about. A borrow test that only cares about member id and copy id says exactly that — the builder fills in title, authors, condition, dueDate calculation.
+
+**Code pointer:** `apps/library/src/catalog/sample-catalog-data.ts:3-22` — three small helpers, each following `sample…({overrides})`. And `apps/library/src/catalog/catalog.facade.spec.ts:27-36` — the add-and-find test mentions only the one field it cares about (`isbn`).
+
+---
+
+## Principle 9 — Sample data builders per module
+
+![Films — sample data composed from defaults](./.claude/screenshots/films1.png)
+
+Each module ships its own sample-data helpers — `sampleNewBook`, `sampleNewCopy`, `sampleNewMember`, `sampleBorrowRequest` — with sensible defaults and an `overrides` parameter. Exploratory tests become one line. Setup explosion does not happen, because you never write setup.
+
+Builders live next to the module, not in a shared test folder. The moment two modules need the same builder, you have a shared domain concept you should extract into a module — not a shared test helper.
+
+**Code pointer:** `apps/library/src/catalog/sample-catalog-data.ts:3-22` is the canonical shape; `apps/library/src/lending/sample-lending-data.ts` follows the same pattern for borrow and reserve requests.
+
+---
+
+## Principle 10 — Common interactions for integration
+
+![Cables — hide the wiring](./.claude/screenshots/cables.jpeg)
+
+Integration tests deal with HTTP. Left raw, every test has to re-decide method, path, encoding, and serialization — and when a route changes, every test changes with it. Hide that behind small helpers named in the domain's voice.
+
+The integration suite never writes `request(app).post('/books').send(dto)` inline. It calls `postNewBook(app, dto)`. The helper owns the HTTP mechanics; the test owns the domain statement.
+
+**Code pointer:** `apps/library/test/support/interactions/catalog-interactions.ts:13-39` — six helpers covering every HTTP call the Catalog integration test makes. Lending and Membership ship parallel files.
+
+---
+
+## Principle 11 — Show, don't tell (DSL)
+
+![A row of similar things — a queue](./.claude/screenshots/rower.jpeg)
+
+If you would draw the domain state on a whiteboard, let the test look like the drawing. Build a tiny DSL per test file or per domain concept. The test stops poking at internal fields and starts stating the requirement.
+
+The reservation queue in Lending is naturally list-shaped: `alice, bob, carol` wait for a book, the earliest-queued is fulfilled when someone returns. The test reads like that:
+
+```ts
+// apps/library/src/lending/lending.reservations.spec.ts:137-149
+await dsl.after('alice').reserves(book);
+await dsl.after('bob').reserves(book);
+await dsl.after('carol').reserves(book);
+
+expect(await dsl.queueFor(book)).toEqual(['alice', 'bob', 'carol']);
+```
+
+`after`, `reserves`, `queueFor`, and `whenReturned` are a four-verb DSL defined in `apps/library/src/lending/testing/reservation-dsl.ts:16-33`. Two tests use it (`apps/library/src/lending/lending.reservations.spec.ts:137-168`); the rule of three says wait before extracting more helpers.
+
+---
+
+## Ports & gaps — where the TypeScript port diverges from Groovy/Spring
+
+The talk is Java and Spock. Some of Jakub's examples rely on language features that do not exist in TypeScript; the port uses the closest honest equivalent and calls out the gap.
+
+- **No operator overloading.** Jakub uses `B >> F` to express "move B under F" in a tree-DSL. TypeScript cannot overload operators. The demo uses method chains (`dsl.after(alice).reserves(book)`) and fluent builders instead.
+- **No Spock `given:/when:/then:` labels.** Spock makes three-phase tests a language feature. The demo uses plain comments (`// given…`, `// when…`, `// then…`) inside each `it()` block. Readable, not structural.
+- **No `@Autowired` test wiring.** Spring's test runner assembles collaborators out of the container. The demo uses plain factory functions (`createCatalogFacade({ overrides })`) — no `Test.createTestingModule`, no decorators in the test file. The facade class is `@Injectable()` so production wiring still works; tests sidestep the container entirely.
+- **No Java package-private visibility.** In Java, module-internal classes are naturally invisible to callers outside the package. TypeScript has no equivalent. The demo enforces the boundary with a barrel file (`index.ts`) that re-exports only the facade and DTOs, plus an ESLint `no-restricted-paths` rule that rejects imports reaching into a module's internals.
+
+---
+
+## Summary
+
+Jakub's own summary from slide 61:
+
+> Focus on testing modules. Test the behaviour, not implementation. Prepare sample test data. Hide API for integration under meaningful methods. Build a small DSL. Extract code that slows integration tests into self-tested jars. Tests == specifications == requirements.

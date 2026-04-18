@@ -1,0 +1,32 @@
+{
+  "name": "library",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Library Lending demo — NestJS modular monolith in the Nabrdalik style",
+  "scripts": {
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.3.7",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^10.3.7",
+    "@nestjs/platform-express": "^10.3.7",
+    "drizzle-orm": "^0.30.9",
+    "postgres": "^3.4.4",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.15.26",
+    "@testcontainers/postgresql": "^11.14.0",
+    "@types/supertest": "^7.2.0",
+    "drizzle-kit": "^0.20.17",
+    "supertest": "^7.2.2",
+    "testcontainers": "^11.14.0",
+    "unplugin-swc": "^1.5.9"
+  }
+}

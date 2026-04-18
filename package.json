@@ -1,0 +1,23 @@
+{
+  "name": "improving-tdd-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Teaching artifact — Jakub Nabrdalik's 'Improving your TDD' talk ported to NestJS + Drizzle + Vitest",
+  "type": "module",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:unit": "pnpm --filter library test:unit",
+    "test:integration": "pnpm --filter library test:integration"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@typescript-eslint/eslint-plugin": "^7.7.0",
+    "@typescript-eslint/parser": "^7.7.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.4.5",
+    "vitest": "^1.5.0"
+  }
+}
