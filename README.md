@@ -2,6 +2,15 @@
 
 A teaching artifact that ports Jakub Nabrdalik's [*Improving your Test Driven Development in 45 minutes*](https://www.youtube.com/watch?v=2vEoL3Irgiw) talk from Java/Spock to TypeScript/NestJS.
 
+## Attribution
+
+All ideas, principles, and example domain in this repo originate with **Jakub Nabrdalik** — the author of the original talk. This project is a port, not original work.
+
+- Talk (video): <https://www.youtube.com/watch?v=2vEoL3Irgiw>
+- Slides: <https://jakubn.gitlab.io/improvingtdd/>
+
+If you are here for the content, watch Jakub's talk first — this repo is useful as a TypeScript translation of what he teaches.
+
 Three deliverables:
 1. A runnable NestJS + Drizzle app demonstrating the eleven principles (under `apps/library/`)
 2. A [`GUIDE.md`](./GUIDE.md) walking each principle with pointers into the demo
