@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createMembershipFacade } from './membership.configuration.js';
 import {
   DuplicateEmailError,
+  InvalidMemberError,
   MemberNotFoundError,
   MembershipStatus,
   MembershipTier,
@@ -110,6 +111,52 @@ describe('MembershipFacade', () => {
     // then the member is not eligible and the reason is SUSPENDED
     expect(eligibility.eligible).toBe(false);
     expect(eligibility.reason).toBe('SUSPENDED');
+  });
+
+  it('rejects registering a member with an empty name', async () => {
+    // given a membership module
+    const membership = buildFacade();
+
+    // when / then registering a member whose name is blank or whitespace-only
+    await expect(
+      membership.registerMember(sampleNewMember({ name: '' })),
+    ).rejects.toThrow(InvalidMemberError);
+    await expect(
+      membership.registerMember(sampleNewMember({ name: '   ' })),
+    ).rejects.toThrow(InvalidMemberError);
+  });
+
+  it('rejects registering a member with a malformed email', async () => {
+    // given a membership module
+    const membership = buildFacade();
+
+    // when / then registering with emails that are not in a valid format
+    await expect(
+      membership.registerMember(sampleNewMember({ email: '' })),
+    ).rejects.toThrow(InvalidMemberError);
+    await expect(
+      membership.registerMember(sampleNewMember({ email: 'not-an-email' })),
+    ).rejects.toThrow(InvalidMemberError);
+    await expect(
+      membership.registerMember(sampleNewMember({ email: 'missing@domain' })),
+    ).rejects.toThrow(InvalidMemberError);
+    await expect(
+      membership.registerMember(sampleNewMember({ email: 'two@@at.com' })),
+    ).rejects.toThrow(InvalidMemberError);
+  });
+
+  it('trims surrounding whitespace from name and email on registration', async () => {
+    // given a membership module
+    const membership = buildFacade();
+
+    // when a member is registered with padded name and email
+    const member = await membership.registerMember(
+      sampleNewMember({ name: '  Ada Lovelace  ', email: '  ada@example.com  ' }),
+    );
+
+    // then the stored values are trimmed
+    expect(member.name).toBe('Ada Lovelace');
+    expect(member.email).toBe('ada@example.com');
   });
 
   it('rejects registering a member with an email that already exists', async () => {

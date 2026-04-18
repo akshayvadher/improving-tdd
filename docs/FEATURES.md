@@ -43,7 +43,7 @@ A member has a name, an email, a tier, and a status.
 ### As a librarian I can…
 
 - **Register a new member** with name and email.
-  The system rejects a second registration with the same email. New members start out `ACTIVE` and on the `STANDARD` tier.
+  Name must be non-empty. Email must be syntactically valid (`local@domain.tld`). Surrounding whitespace on name and email is trimmed. A second registration with the same email is rejected. New members start out `ACTIVE` and on the `STANDARD` tier.
 - **Look up a member** by id.
 - **Suspend a member** (for example, unpaid fines) and **reactivate** them later.
 - **Upgrade a member's tier** between `STANDARD` and `PREMIUM`.

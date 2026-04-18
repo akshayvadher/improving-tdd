@@ -2,6 +2,7 @@ export { MembershipFacade } from './membership.facade.js';
 export { MembershipModule } from './membership.module.js';
 export {
   DuplicateEmailError,
+  InvalidMemberError,
   MemberNotFoundError,
   MembershipStatus,
   MembershipTier,

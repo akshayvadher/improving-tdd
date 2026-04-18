@@ -46,3 +46,13 @@ export class DuplicateEmailError extends Error {
     this.name = 'DuplicateEmailError';
   }
 }
+
+export class InvalidMemberError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`Invalid member: ${reason}`);
+    this.name = 'InvalidMemberError';
+    this.reason = reason;
+  }
+}

@@ -121,6 +121,41 @@ A module is a bounded context: it owns its data, exposes one public API, and has
 
 The demo has exactly three modules — `catalog`, `membership`, `lending`. Each one owns its repositories, its types, its facade. Each one has a single entry point via its barrel file, and that barrel exports only the facade class and the DTOs its signatures mention.
 
+### Domain invariants live in the facade, not in a pipe
+
+A knock-on question when you see how small the facade stays: *where does validation go?* Two honest options:
+
+1. **Transport-level shape checks** (malformed JSON, wrong types) belong on the controller — `class-validator` decorators and a NestJS `ValidationPipe`. They catch bad HTTP requests before the facade runs.
+2. **Domain invariants** (non-empty name, well-formed email, eligibility rules, duplicate-email) belong **inside the facade**, next to the state they guard.
+
+The demo uses option 2 for anything the business cares about. `MembershipFacade.registerMember` enforces "name is required", "email must match `local@domain.tld`", and "email must be unique" — all as its own code, all covered by fast facade tests (no `ValidationPipe`, no app boot). If the only enforcement were a controller-side pipe, another caller — a different controller, a CLI, another module — could skip the rule entirely. Putting it in the facade makes the rule true regardless of who calls in.
+
+```ts
+// apps/library/src/membership/membership.facade.ts
+async registerMember(dto: NewMemberDto): Promise<MemberDto> {
+  const name = dto.name?.trim() ?? '';
+  if (name.length === 0) throw new InvalidMemberError('name is required');
+
+  const email = dto.email?.trim() ?? '';
+  if (email.length === 0) throw new InvalidMemberError('email is required');
+  if (!EMAIL_FORMAT.test(email)) throw new InvalidMemberError(`email format is invalid: ${email}`);
+
+  // …duplicate-email check, then save
+}
+```
+
+The test looks like every other facade test — no pipe setup, no HTTP:
+
+```ts
+// apps/library/src/membership/membership.facade.spec.ts
+it('rejects registering a member with a malformed email', async () => {
+  const membership = buildFacade();
+  await expect(
+    membership.registerMember(sampleNewMember({ email: 'not-an-email' })),
+  ).rejects.toThrow(InvalidMemberError);
+});
+```
+
 ### Why "Facade" and not "Service"?
 
 The name is load-bearing. "Service" is ambiguous — a typical NestJS codebase grows many services per feature (`UserService`, `UserValidationService`, `UserQueryService`) and any of them can be injected anywhere. The name tells you nothing about what is an entry point and what is an internal helper.
