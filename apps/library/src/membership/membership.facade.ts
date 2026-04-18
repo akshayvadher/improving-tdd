@@ -2,9 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
 import type { MembershipRepository } from './membership.repository.js';
+import { parseNewMember } from './membership.schema.js';
 import {
   DuplicateEmailError,
-  InvalidMemberError,
   MemberNotFoundError,
   MembershipStatus,
   MembershipTier,
@@ -13,11 +13,6 @@ import {
   type MemberId,
   type NewMemberDto,
 } from './membership.types.js';
-
-// Simple format check: one @, non-empty local part, a dotted domain.
-// Not RFC 5322 — good enough for a domain invariant; exotic addresses can
-// be rejected at the transport layer if the business ever cares.
-const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type IdGenerator = () => string;
 
@@ -29,18 +24,7 @@ export class MembershipFacade {
   ) {}
 
   async registerMember(dto: NewMemberDto): Promise<MemberDto> {
-    const name = dto.name?.trim() ?? '';
-    if (name.length === 0) {
-      throw new InvalidMemberError('name is required');
-    }
-
-    const email = dto.email?.trim() ?? '';
-    if (email.length === 0) {
-      throw new InvalidMemberError('email is required');
-    }
-    if (!EMAIL_FORMAT.test(email)) {
-      throw new InvalidMemberError(`email format is invalid: ${email}`);
-    }
+    const { name, email } = parseNewMember(dto);
 
     const existing = await this.repository.findMemberByEmail(email);
     if (existing) {

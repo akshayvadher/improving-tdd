@@ -136,29 +136,65 @@ The demo uses option 2 for anything the business cares about. Every facade guard
 
 All are covered by fast facade tests (no `ValidationPipe`, no app boot). If the only enforcement were a controller-side pipe, another caller — a different controller, a CLI, another module — could skip the rule entirely. Putting it in the facade makes the rule true regardless of who calls in.
 
+#### Keeping the facade readable — schemas per module
+
+Inlining `if (!isValid) throw …` in the facade gets noisy fast. The demo separates *parsing the input* from *applying the business rule*, using a small **zod schema per module**:
+
 ```ts
-// apps/library/src/membership/membership.facade.ts
-async registerMember(dto: NewMemberDto): Promise<MemberDto> {
-  const name = dto.name?.trim() ?? '';
-  if (name.length === 0) throw new InvalidMemberError('name is required');
+// apps/library/src/catalog/catalog.schema.ts
+export const NewBookSchema = z.object({
+  title: z.string({ required_error: 'title is required' }).trim().min(1, 'title is required'),
+  authors: z
+    .array(z.string().trim())
+    .transform((authors) => authors.filter((a) => a.length > 0))
+    .refine((authors) => authors.length > 0, 'at least one author is required'),
+  isbn: z
+    .string({ required_error: 'isbn is required' })
+    .trim()
+    .min(1, 'isbn is required')
+    .refine(isValidIsbn, (raw) => ({ message: `isbn format is invalid: ${raw}` })),
+});
 
-  const email = dto.email?.trim() ?? '';
-  if (email.length === 0) throw new InvalidMemberError('email is required');
-  if (!EMAIL_FORMAT.test(email)) throw new InvalidMemberError(`email format is invalid: ${email}`);
-
-  // …duplicate-email check, then save
+export function parseNewBook(input: unknown): z.infer<typeof NewBookSchema> {
+  const result = NewBookSchema.safeParse(input);
+  if (!result.success) {
+    throw new InvalidBookError(result.error.issues[0]?.message ?? 'invalid input');
+  }
+  return result.data;
 }
 ```
 
-The test looks like every other facade test — no pipe setup, no HTTP:
+The facade becomes a single line of parsing plus the domain orchestration — nothing else:
 
 ```ts
-// apps/library/src/membership/membership.facade.spec.ts
-it('rejects registering a member with a malformed email', async () => {
-  const membership = buildFacade();
-  await expect(
-    membership.registerMember(sampleNewMember({ email: 'not-an-email' })),
-  ).rejects.toThrow(InvalidMemberError);
+// apps/library/src/catalog/catalog.facade.ts
+async addBook(dto: NewBookDto): Promise<BookDto> {
+  const { title, authors, isbn } = parseNewBook(dto);
+
+  const existing = await this.repository.findBookByIsbn(isbn);
+  if (existing) throw new DuplicateIsbnError(isbn);
+
+  const book: BookDto = { bookId: this.newId(), title, authors, isbn };
+  await this.repository.saveBook(book);
+  return book;
+}
+```
+
+Three things to notice about this split:
+
+1. **Zod is an implementation detail, not a public contract.** The helper (`parseNewBook`) catches zod's error and re-throws `InvalidBookError` — the module's own domain error. Callers, tests, and other modules never see `ZodError`. If you later swap zod for Valibot, class-validator, or hand-written checks, nothing outside `catalog.schema.ts` changes.
+
+2. **The schema lives *inside* the module.** It is not re-exported from `catalog/index.ts`, not shared across modules. Membership has its own. If two modules ever need the same schema, that is a signal the concept is a shared module — not a shared schema utility.
+
+3. **Tests stay identical.** They assert on `InvalidBookError`, not on zod messages:
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts — unchanged by the refactor
+it('rejects adding a book with a malformed isbn', async () => {
+  const catalog = buildFacade();
+  await expect(catalog.addBook(sampleNewBook({ isbn: 'not-an-isbn' }))).rejects.toThrow(
+    InvalidBookError,
+  );
 });
 ```
 
