@@ -30,3 +30,6 @@ Thumbs.db
 # test
 coverage/
 .nyc_output/
+
+# claude
+.claude/
