@@ -5,6 +5,8 @@ export {
   CopyNotFoundError,
   CopyStatus,
   DuplicateIsbnError,
+  InvalidBookError,
+  InvalidCopyError,
   type BookDto,
   type BookId,
   type CopyCondition,

@@ -128,7 +128,13 @@ A knock-on question when you see how small the facade stays: *where does validat
 1. **Transport-level shape checks** (malformed JSON, wrong types) belong on the controller — `class-validator` decorators and a NestJS `ValidationPipe`. They catch bad HTTP requests before the facade runs.
 2. **Domain invariants** (non-empty name, well-formed email, eligibility rules, duplicate-email) belong **inside the facade**, next to the state they guard.
 
-The demo uses option 2 for anything the business cares about. `MembershipFacade.registerMember` enforces "name is required", "email must match `local@domain.tld`", and "email must be unique" — all as its own code, all covered by fast facade tests (no `ValidationPipe`, no app boot). If the only enforcement were a controller-side pipe, another caller — a different controller, a CLI, another module — could skip the rule entirely. Putting it in the facade makes the rule true regardless of who calls in.
+The demo uses option 2 for anything the business cares about. Every facade guards its own invariants:
+
+- `CatalogFacade.addBook` rejects blank title, zero authors, and malformed ISBNs (accepts ISBN-10 or ISBN-13, with or without hyphens).
+- `CatalogFacade.registerCopy` rejects any `condition` outside `NEW | GOOD | FAIR | POOR`.
+- `MembershipFacade.registerMember` rejects blank name, malformed email, and duplicate emails.
+
+All are covered by fast facade tests (no `ValidationPipe`, no app boot). If the only enforcement were a controller-side pipe, another caller — a different controller, a CLI, another module — could skip the rule entirely. Putting it in the facade makes the rule true regardless of who calls in.
 
 ```ts
 // apps/library/src/membership/membership.facade.ts

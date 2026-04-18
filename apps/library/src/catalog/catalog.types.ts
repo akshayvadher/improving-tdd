@@ -56,3 +56,23 @@ export class DuplicateIsbnError extends Error {
     this.name = 'DuplicateIsbnError';
   }
 }
+
+export class InvalidBookError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`Invalid book: ${reason}`);
+    this.name = 'InvalidBookError';
+    this.reason = reason;
+  }
+}
+
+export class InvalidCopyError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`Invalid copy: ${reason}`);
+    this.name = 'InvalidCopyError';
+    this.reason = reason;
+  }
+}

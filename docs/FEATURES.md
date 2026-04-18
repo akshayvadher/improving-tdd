@@ -21,11 +21,11 @@ A book is a *title*: ISBN, title, authors. A copy is a *physical artefact* on a 
 ### As a librarian I can…
 
 - **Add a new book to the catalog** by ISBN, title, and authors.
-  The system rejects a second book with an ISBN that already exists.
+  Title must be non-empty, at least one author is required, and the ISBN must be well-formed (ISBN-10 or ISBN-13, with or without hyphens). Surrounding whitespace on title, authors, and ISBN is trimmed. A second book with the same ISBN is rejected.
 - **Look up a book by ISBN** to confirm it is registered.
 - **List every book** in the order they were added.
 - **Register a new physical copy** of a book with a condition (`NEW`, `GOOD`, `FAIR`, or `POOR`).
-  A copy starts life *available*.
+  A condition outside that set is rejected. A copy starts life *available*.
 - **Look up a specific copy** by its id.
 - **Mark a copy unavailable** (damaged, lost, in repair) and **mark it available again** when it returns to circulation.
 
