@@ -31,5 +31,8 @@ Thumbs.db
 coverage/
 .nyc_output/
 
-# claude
-.claude/
+# claude — ignore local helper files, keep sharable skills and screenshots
+.claude/*
+!.claude/skills/
+!.claude/screenshots/
+.claude/screenshots/.claude/
