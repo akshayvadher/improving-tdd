@@ -25,7 +25,39 @@ When you write a test per class and per method, every refactor turns red even wh
 
 The demo never has a `catalog.repository.spec.ts` or a `loan.entity.spec.ts`. There are no tests on private helpers inside a facade. When the repository changes shape — in-memory `Map` today, Drizzle tomorrow — no facade test moves.
 
-**Code pointer:** `apps/library/src/catalog/catalog.facade.spec.ts:26-148` — one spec file for the whole Catalog module. Every test drives through the public facade. Internal helpers like `updateCopyStatus` (`apps/library/src/catalog/catalog.facade.ts:88-97`) have no dedicated test; they are covered by the facade tests that depend on them.
+One spec file for the whole Catalog module. Every test drives through the public facade — no `catalog.repository.spec.ts`, no test for the private `updateCopyStatus` helper.
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts
+describe('CatalogFacade', () => {
+  it('adds a book and finds it by isbn', async () => {
+    const catalog = buildFacade();
+    const added = await catalog.addBook(sampleNewBook({ isbn: '978-0134685991' }));
+    expect(await catalog.findBook('978-0134685991')).toEqual(added);
+  });
+
+  it('marks an available copy unavailable', async () => {
+    const catalog = buildFacade();
+    const book = await catalog.addBook(sampleNewBook());
+    const copy = await catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
+    const updated = await catalog.markCopyUnavailable(copy.copyId);
+    expect(updated.status).toBe(CopyStatus.UNAVAILABLE);
+  });
+});
+```
+
+The private helper it rides through:
+
+```ts
+// apps/library/src/catalog/catalog.facade.ts — no dedicated test, covered transitively
+private async updateCopyStatus(copyId: CopyId, status: CopyStatus): Promise<CopyDto> {
+  const copy = await this.repository.findCopyById(copyId);
+  if (!copy) throw new CopyNotFoundError(copyId);
+  const updated: CopyDto = { ...copy, status };
+  await this.repository.saveCopy(updated);
+  return updated;
+}
+```
 
 ---
 
@@ -52,7 +84,32 @@ Captured vitest output from `pnpm test:unit`:
 
 Forty tests, nineteen milliseconds of actual assertions. The rest is cold-start overhead that disappears in watch mode.
 
-**Code pointer:** `apps/library/test/lending.return-loan.integration.spec.ts` is the only place a Postgres testcontainer shows up for Lending — everything else is in memory.
+The only place a Postgres testcontainer shows up for Lending — everything else is in memory:
+
+```ts
+// apps/library/test/lending.return-loan.integration.spec.ts
+suite('Lending returnLoan atomicity (real Postgres)', () => {
+  let fixture: PostgresFixture;
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    fixture = await startPostgres();
+    app = await createTestApp({ databaseUrl: fixture.connectionUrl });
+    failingRepo = installFailingReservationRepo(app.get(LendingFacade));
+  }, 120_000);
+
+  it('rolls back the loan update when the fulfillment write fails inside the tx', async () => {
+    // given alice borrowed a book and bob has a pending reservation for it
+    const loan = (await borrowCopy(app, alice.memberId, copy.copyId)).body;
+    await reserveBook(app, bob.memberId, book.bookId);
+    failingRepo.armFailure();
+
+    // when alice tries to return — fulfillment write throws inside the tx
+    // then the loan update rolls back
+    // …
+  });
+});
+```
 
 ---
 
@@ -64,7 +121,27 @@ A module is a bounded context: it owns its data, exposes one public API, and has
 
 The demo has exactly three modules — `catalog`, `membership`, `lending`. Each one owns its repositories, its types, its facade. Each one has a single entry point via its barrel file, and that barrel exports only the facade class and the DTOs its signatures mention.
 
-**Code pointer:** `apps/library/src/catalog/index.ts:1-16` — the public surface of the Catalog module is this file. Everything else is internal.
+The public surface of the Catalog module is this file. Everything else is internal.
+
+```ts
+// apps/library/src/catalog/index.ts
+export { CatalogFacade } from './catalog.facade.js';
+export { CatalogModule } from './catalog.module.js';
+export {
+  BookNotFoundError,
+  CopyNotFoundError,
+  CopyStatus,
+  DuplicateIsbnError,
+  type BookDto,
+  type BookId,
+  type CopyCondition,
+  type CopyDto,
+  type CopyId,
+  type Isbn,
+  type NewBookDto,
+  type NewCopyDto,
+} from './catalog.types.js';
+```
 
 ---
 
@@ -76,7 +153,28 @@ Inside a module, test the facade. Every flow, every corner case, every error pat
 
 The Catalog facade has eleven tests covering happy paths, error cases, and idempotency — all through the public API, none touching a database. Adding a new scenario is three lines in a describe block; you do not think about test infrastructure.
 
-**Code pointer:** `apps/library/src/catalog/catalog.facade.spec.ts:104-147` — error-case tests (unknown ISBN, unknown book when registering a copy, unknown copy on status flips, duplicate ISBN) all run as fast as the happy paths because there is nothing slow to reach for.
+Error-case tests run as fast as the happy paths because there is nothing slow to reach for:
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts
+it('throws BookNotFoundError when finding an unknown isbn', async () => {
+  const catalog = buildFacade();
+  await expect(catalog.findBook('978-0000000000')).rejects.toThrow(BookNotFoundError);
+});
+
+it('throws CopyNotFoundError when marking an unknown copy available', async () => {
+  const catalog = buildFacade();
+  await expect(catalog.markCopyAvailable('unknown-copy-id')).rejects.toThrow(CopyNotFoundError);
+});
+
+it('rejects adding a book with an isbn that already exists', async () => {
+  const catalog = buildFacade();
+  await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+  await expect(catalog.addBook(sampleNewBookWithIsbn('978-0134685991'))).rejects.toThrow(
+    DuplicateIsbnError,
+  );
+});
+```
 
 ---
 
@@ -142,7 +240,30 @@ If your facade accepts a repository as a method parameter, every consumer will i
 
 In the demo, `createCatalogFacade()` is the factory. Its only overrides are a seed for deterministic ids and (in Lending) other modules' facades and the event bus. The repository is never in the signature — callers cannot reach it.
 
-**Code pointer:** `apps/library/src/catalog/catalog.configuration.ts` — the factory function. Notice the test (`apps/library/src/catalog/catalog.facade.spec.ts:22-24`) takes no repository argument; it could not even if it wanted to.
+The factory function:
+
+```ts
+// apps/library/src/catalog/catalog.configuration.ts
+export interface CatalogOverrides {
+  repository?: CatalogRepository;
+  newId?: () => string;
+}
+
+export function createCatalogFacade(overrides: CatalogOverrides = {}): CatalogFacade {
+  const repository = overrides.repository ?? new InMemoryCatalogRepository();
+  const newId = overrides.newId;
+  return newId ? new CatalogFacade(repository, newId) : new CatalogFacade(repository);
+}
+```
+
+The test takes no repository argument; it could not reach for one even if it wanted to:
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts
+function buildFacade() {
+  return createCatalogFacade({ newId: sequentialIds() });
+}
+```
 
 ---
 
@@ -177,7 +298,30 @@ const facade = createLendingFacade({
 
 **`LoanRepository` is NOT mocked.** Lending owns its loans; the real `InMemoryLoanRepository` and `InMemoryReservationRepository` are behind the facade, exercising real logic. Only Catalog and Membership — the other modules — are faked.
 
-**Code pointer:** `apps/library/src/lending/lending.facade.spec.ts:35-143` for the fakes and scene builder; `apps/library/src/lending/lending.facade.spec.ts:190-222` for a borrow-rejects-when-ineligible test that proves the fake membership gates real Lending state.
+The fake-membership test proves the fake gates real Lending state — not by asserting on a mock call, but by checking that no loan was recorded and no event emitted:
+
+```ts
+// apps/library/src/lending/lending.facade.spec.ts
+it('rejects with MemberIneligibleError when membership reports ineligible, touching nothing', async () => {
+  // given a suspended member and an available copy
+  const copy = scene.seedAvailableCopy();
+  scene.membership.setEligibility('alice', {
+    memberId: 'alice',
+    eligible: false,
+    reason: 'SUSPENDED',
+  });
+
+  // when the member tries to borrow
+  await expect(scene.facade.borrow('alice', copy.copyId)).rejects.toBeInstanceOf(
+    MemberIneligibleError,
+  );
+
+  // then no loan was recorded, no event emitted, and the copy is still available
+  expect(await scene.facade.listLoansFor('alice')).toEqual([]);
+  expect(scene.bus.collected()).toEqual([]);
+  expect(scene.catalog.findCopy(copy.copyId).status).toBe(CopyStatus.AVAILABLE);
+});
+```
 
 ---
 
@@ -189,7 +333,38 @@ Every line in a test should earn its place. If you can delete a field and the te
 
 The sample-data helpers default everything a requirement does not care about. A borrow test that only cares about member id and copy id says exactly that — the builder fills in title, authors, condition, dueDate calculation.
 
-**Code pointer:** `apps/library/src/catalog/sample-catalog-data.ts:3-22` — three small helpers, each following `sample…({overrides})`. And `apps/library/src/catalog/catalog.facade.spec.ts:27-36` — the add-and-find test mentions only the one field it cares about (`isbn`).
+Three small helpers, each following `sample…({overrides})`:
+
+```ts
+// apps/library/src/catalog/sample-catalog-data.ts
+export function sampleNewBook(overrides: Partial<NewBookDto> = {}): NewBookDto {
+  return {
+    title: 'The Pragmatic Programmer',
+    authors: ['Andrew Hunt', 'David Thomas'],
+    isbn: '978-0135957059',
+    ...overrides,
+  };
+}
+
+export function sampleNewCopy(overrides: Partial<NewCopyDto> = {}): NewCopyDto {
+  return {
+    bookId: 'book-placeholder-id',
+    condition: 'GOOD' satisfies CopyCondition,
+    ...overrides,
+  };
+}
+```
+
+The add-and-find test mentions only the one field it cares about:
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts
+it('adds a book and finds it by isbn', async () => {
+  const catalog = buildFacade();
+  const added = await catalog.addBook(sampleNewBook({ isbn: '978-0134685991' }));
+  expect(await catalog.findBook('978-0134685991')).toEqual(added);
+});
+```
 
 ---
 
@@ -201,7 +376,26 @@ Each module ships its own sample-data helpers — `sampleNewBook`, `sampleNewCop
 
 Builders live next to the module, not in a shared test folder. The moment two modules need the same builder, you have a shared domain concept you should extract into a module — not a shared test helper.
 
-**Code pointer:** `apps/library/src/catalog/sample-catalog-data.ts:3-22` is the canonical shape; `apps/library/src/lending/sample-lending-data.ts` follows the same pattern for borrow and reserve requests.
+The canonical shape lives next to the Catalog module (see Principle 8). Lending follows the same pattern for its own requests:
+
+```ts
+// apps/library/src/lending/sample-lending-data.ts
+export function sampleBorrowRequest(overrides: Partial<BorrowRequest> = {}): BorrowRequest {
+  return {
+    memberId: 'member-placeholder-id',
+    copyId: 'copy-placeholder-id',
+    ...overrides,
+  };
+}
+
+export function sampleReserveRequest(overrides: Partial<ReserveRequest> = {}): ReserveRequest {
+  return {
+    memberId: 'member-placeholder-id',
+    bookId: 'book-placeholder-id',
+    ...overrides,
+  };
+}
+```
 
 ---
 
@@ -213,7 +407,34 @@ Integration tests deal with HTTP. Left raw, every test has to re-decide method, 
 
 The integration suite never writes `request(app).post('/books').send(dto)` inline. It calls `postNewBook(app, dto)`. The helper owns the HTTP mechanics; the test owns the domain statement.
 
-**Code pointer:** `apps/library/test/support/interactions/catalog-interactions.ts:13-39` — six helpers covering every HTTP call the Catalog integration test makes. Lending and Membership ship parallel files.
+Six helpers cover every HTTP call the Catalog integration test makes. Lending and Membership ship parallel files.
+
+```ts
+// apps/library/test/support/interactions/catalog-interactions.ts
+export function postNewBook(app: INestApplication, dto: NewBookDto): HttpCall {
+  return server(app).post('/books').send(dto);
+}
+
+export function getBook(app: INestApplication, isbn: string): HttpCall {
+  return server(app).get(`/books/${encodeURIComponent(isbn)}`);
+}
+
+export function registerCopy(
+  app: INestApplication,
+  bookId: string,
+  dto: NewCopyDto,
+): HttpCall {
+  return server(app).post(`/books/${bookId}/copies`).send(dto);
+}
+
+export function markCopyAvailable(app: INestApplication, copyId: string): HttpCall {
+  return server(app).patch(`/copies/${copyId}/available`);
+}
+
+export function markCopyUnavailable(app: INestApplication, copyId: string): HttpCall {
+  return server(app).patch(`/copies/${copyId}/unavailable`);
+}
+```
 
 ---
 
