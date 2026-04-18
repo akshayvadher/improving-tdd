@@ -121,6 +121,19 @@ A module is a bounded context: it owns its data, exposes one public API, and has
 
 The demo has exactly three modules — `catalog`, `membership`, `lending`. Each one owns its repositories, its types, its facade. Each one has a single entry point via its barrel file, and that barrel exports only the facade class and the DTOs its signatures mention.
 
+### Why "Facade" and not "Service"?
+
+The name is load-bearing. "Service" is ambiguous — a typical NestJS codebase grows many services per feature (`UserService`, `UserValidationService`, `UserQueryService`) and any of them can be injected anywhere. The name tells you nothing about what is an entry point and what is an internal helper.
+
+"Facade" (in the [GoF sense](https://en.wikipedia.org/wiki/Facade_pattern)) names the role precisely: *the single simplified interface to a subsystem*. In this codebase that maps to a hard rule:
+
+- **One facade per module.** `CatalogFacade` is **the** public API of Catalog — not *a* public API.
+- **It is the only class re-exported from the barrel.** Repositories, in-memory implementations, Drizzle implementations, private helpers like `updateCopyStatus` — none of them leave the module.
+- **Other modules depend on the facade type, never on internals.** `LendingFacade` holds a `CatalogFacade`, not a `CatalogRepository`.
+- **Outsiders cannot reach internals** — the barrel file plus ESLint's `no-restricted-paths` enforce it structurally.
+
+Rename it to `CatalogService` and that contract disappears into convention. Tomorrow someone adds a `CatalogQueryService`, imports a repository directly, and the module boundary starts to leak. It is the same reason Principle 7 is phrased "mock other modules' *facades*" rather than "mock other modules' services" — the name *is* the seam.
+
 The public surface of the Catalog module is this file. Everything else is internal.
 
 ```ts
