@@ -363,9 +363,16 @@ function buildFacade() {
 
 When module A depends on module B, A's unit tests interact with B *only through B's facade* — never B's internals, never A's own repository. That rule is what the principle protects. Mocking your own repo just lets you assert on implementation details; reaching into B's internals couples A's tests to B's structure.
 
-The talk's original phrasing is "mock other modules' facades." In the TypeScript port there is an even cleaner answer: **let the other module hand you its facade, wired with its own in-memory defaults.** That is what the `createXFacade()` factories are for (Principle 6). The factory-produced facade runs zero I/O — it *is* the test double. Hand-rolling a fake duplicates work the module already did.
+The talk's original phrasing is "mock other modules' facades." In the TypeScript port, the idea lands as a tradeoff between two tools — both are in the toolbox, and the choice is about what the test needs to observe:
 
-Lending depends on `CatalogFacade` and `MembershipFacade`. Its tests wire the *real* facades:
+- **Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.**
+- **Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.**
+
+The rest of this principle walks both paths with concrete examples. Neither is "more correct"; the question is which one fits the behaviour the test is pinning down.
+
+### (a) The default — real facade via factory
+
+Lending depends on `CatalogFacade` and `MembershipFacade`. Its tests wire the *real* facades, produced by the same factories that Principle 6 introduced:
 
 ```ts
 // apps/library/src/lending/lending.facade.spec.ts
@@ -411,25 +418,61 @@ it('rejects with MemberIneligibleError when the member is suspended, touching no
 });
 ```
 
-### Why this is Principle 7 in spirit, not a deviation
+**When to prefer real-via-factory (the default):**
+
+- The other module already ships a zero-I/O `createXFacade()` factory. Using it is strictly less code than hand-rolling a fake.
+- You want the cross-module behaviour to *actually run* — a scripted fake proves only what you scripted; the real facade proves the contract.
+- The scenario can be reached by ordinary seeding — register a member, suspend them, list books, borrow. If the state you care about is something the real facade produces naturally, use the real facade.
+
+**Why this is Principle 7 in spirit, not a deviation:**
 
 - Lending still only touches Catalog and Membership *through their public facades*. It never imports a `CatalogRepository`, never pokes at `member.status`.
 - `LoanRepository` and `ReservationRepository` — Lending's OWN data — stay behind Lending's facade. The principle still forbids Lending's tests from reaching into them.
 - The test still proves the behavioural contract across the seam ("ineligible member → no loan, no event") — it just uses real Membership behaviour rather than a scripted fake.
 
-### When to hand-roll a fake anyway
+### (b) When a hand-rolled fake is justified — the escape hatch
 
-Reach for a hand-written fake of another module's facade when the real in-memory version cannot reach the state you need to test:
+Hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe. Concretely:
 
-- You want the other module to throw a specific error at a specific call (e.g., "what if Catalog's `markCopyAvailable` fails after Lending commits?"). The factory-wired real facade is too well-behaved to reproduce that.
-- The other module is slow or nondeterministic even in memory (rare, but possible — think of a module whose in-memory version still opens files).
-- You want to freeze the contract A depends on as test documentation, and changes to B should not break A's tests.
+1. **Inducing specific failure timing** — you need the other module to throw on the *first* call of a batch, or to succeed N times and fail on the Nth+1. A well-behaved in-memory implementation will not throw spontaneously.
+2. **Forcing mid-operation exceptions** — "what if `Membership.suspend` throws mid-batch after some fines were already recorded?" The real in-memory facade is too well-behaved to reproduce that.
+3. **Simulating a collaborator that doesn't exist yet** — when you're working in parallel with another team and the dependency is stubbed on the other side, a hand-rolled fake pins down the shape of the contract you depend on.
+4. **Forcing a behavior the real implementation refuses to produce** — e.g., a repository returning malformed data, to exercise defensive code.
 
-For the cases above, Lending keeps the option — `createLendingFacade` accepts any object matching the `CatalogFacade` / `MembershipFacade` shapes — but the demo never needs it.
+The canonical justified example lives in the Fines module's unit spec. Fines' `processOverdueLoans(now)` walks overdue loans, writes fines, and calls `MembershipFacade.suspend` for any member over the threshold. The teaching scenario is *"what happens if `suspend` throws mid-batch?"* — a contract the real factory-wired Membership cannot produce without corrupting the rest of the scene.
+
+```ts
+// apps/library/src/fines/fines.facade.spec.ts — the single hand-rolled-fake test
+class ThrowingOnceMembershipFacade extends MembershipFacade {
+  suspendCallCount = 0;
+  // …wraps a real MembershipFacade (built via createMembershipFacade),
+  // delegates every method, and throws a deterministic error on the first
+  // call to `suspend` only.
+}
+
+describe('when Membership.suspend throws mid-batch (hand-rolled fake)', () => {
+  it('persists the first member fine, emits FineAssessed, does NOT emit MemberAutoSuspended, and halts before the second member', async () => {
+    // …see the spec file for the full scenario
+  });
+});
+```
+
+Every other test in `fines.facade.spec.ts` uses real `createCatalogFacade()` + `createMembershipFacade()` + `createLendingFacade()`. The hand-rolled fake is the **one exception** — scoped tightly to the one behaviour the real facade cannot produce, with a prose comment block at the point of use explaining why.
+
+A second justified hand-roll exists in `apps/library/src/lending/lending.reservations.spec.ts`, where the reservation-queue DSL wants a monotonically advancing clock producing stable queue ordering without registering real books and members. The cost of real-via-factory would bury the requirement under scene setup. The hand-rolled `fakeCatalogFacade()` / `alwaysEligibleMembership()` keep the DSL itself readable — the point the test is trying to make.
+
+### (c) When a hand-rolled fake is NOT justified
+
+These are the failure modes — if you find yourself reaching for a hand-rolled fake for one of these reasons, switch to the real factory:
+
+1. **Convenience** — "it's easier to write a small fake than to read how Catalog's factory works." Read the factory once. It will be shorter than your fake.
+2. **Avoiding repository setup** — Catalog's in-memory repo is a `Map`. Membership's is a `Map`. There is no setup cost to avoid.
+3. **Dodging sample-data builders** — `sampleNewBook({ isbn: '…' })` is one line. A hand-rolled Catalog fake with a fake `findBook` method is many more.
+4. **Mocking call counts** — if the assertion is "`findBook` was called 3 times," the test has drifted from behaviour to implementation. Assert on observable outcome — the DTO that came back, the event that was emitted, the state visible through the facade.
 
 ### Lending's own repos stay in-memory, hand-armable
 
-One hand-rolled double *does* stay: `ThrowingOnceReservationRepository`. But that is Lending's OWN reservation repo, not a cross-module fake — it exists only to force a mid-transaction failure and prove the atomicity contract. Principle 5 (in-memory doubles for your own data) with a tiny bit of failure injection.
+Separate from the cross-module question: one hand-rolled double *does* stay on Lending's own side — `ThrowingOnceReservationRepository`. But that is Lending's OWN reservation repo, not a cross-module fake — it exists only to force a mid-transaction failure and prove the atomicity contract. Principle 5 (in-memory doubles for your own data) with a tiny bit of failure injection. Same escape-hatch shape as the cross-module hand-roll, applied to your own data.
 
 ---
 

@@ -6,6 +6,7 @@ interface ExpressLikeResponse {
 }
 
 import { BookNotFoundError, CopyNotFoundError, DuplicateIsbnError } from '../../catalog/index.js';
+import { FineAlreadyPaidError, FineNotFoundError } from '../../fines/index.js';
 import {
   CopyUnavailableError,
   LoanNotFoundError,
@@ -24,6 +25,7 @@ const NOT_FOUND_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   CopyNotFoundError,
   MemberNotFoundError,
   LoanNotFoundError,
+  FineNotFoundError,
 ];
 
 const CONFLICT_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
@@ -31,6 +33,7 @@ const CONFLICT_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   DuplicateEmailError,
   CopyUnavailableError,
   MemberIneligibleError,
+  FineAlreadyPaidError,
 ];
 
 @Catch(Error)

@@ -1,14 +1,15 @@
 # Features — what this application does
 
-A minimal library-lending system. It tracks books and their physical copies, registered members, and the loans and reservations that connect the two.
+A minimal library-lending system. It tracks books and their physical copies, registered members, the loans and reservations that connect the two, and the fines that accrue when a loan runs past its due date.
 
-Three modules, three concerns:
+Four modules, four concerns:
 
-| Module         | Question it answers                          |
-|----------------|-----------------------------------------------|
-| **Catalog**    | What books exist, and which physical copies?  |
-| **Membership** | Who is registered, and can they borrow today? |
-| **Lending**    | Who borrowed what, and who is waiting?        |
+| Module         | Question it answers                                     |
+|----------------|---------------------------------------------------------|
+| **Catalog**    | What books exist, and which physical copies?            |
+| **Membership** | Who is registered, and can they borrow today?           |
+| **Lending**    | Who borrowed what, and who is waiting?                  |
+| **Fines**      | Who owes money for overdue loans, and who got suspended?|
 
 The rest of this doc walks what each module lets you do, in the user's voice.
 
@@ -104,12 +105,68 @@ The cross-module call — telling Catalog to mark the copy available — lives *
 
 ---
 
+## Fines — "who owes money, and who got suspended"
+
+A fine is a monetary penalty tied to a single overdue loan. The fine accrues at a configurable daily rate for every day the loan is past its due date, up to the moment the batch is run. When a member's total unpaid fines cross a configurable threshold, Membership is asked to suspend the member automatically.
+
+Fines stands alongside Lending. It reads loans through `LendingFacade.listOverdueLoans` and drives suspensions through `MembershipFacade.suspend`. Lending has **no** dependency on Fines — a suspended member is blocked at Membership, not at Fines.
+
+### As a librarian I can…
+
+- **Assess fines for a single member** at a chosen moment. The system enumerates the member's overdue loans, writes one fine per loan, and returns the full list.
+- **Run the nightly batch** across the whole library. Every member with overdue loans gets fines assessed, and anyone whose unpaid total crosses the threshold is auto-suspended in the same pass.
+- **List a member's fines** in insertion order — paid and unpaid together.
+- **Look up a single fine** by id.
+- **Mark a fine paid.** A fine can only be paid once; a second attempt is rejected.
+
+### Facade API
+
+| Method                             | Purpose                                              |
+|------------------------------------|------------------------------------------------------|
+| `assessFinesFor(memberId, now)`    | Assess fines for one member's overdue loans.         |
+| `processOverdueLoans(now)`         | Batch — assess + auto-suspend across all members.    |
+| `listFinesFor(memberId)`           | Return all fines for a member, insertion order.      |
+| `findFine(fineId)`                 | Return the fine or `FineNotFoundError`.              |
+| `payFine(fineId)`                  | Stamp `paidAt`; `FineAlreadyPaidError` on re-pay.    |
+
+### Rules enforced by the code
+
+| Rule                                                                   | Where it lives                                      |
+|------------------------------------------------------------------------|-----------------------------------------------------|
+| Fine amount = days-overdue × `dailyRateCents`.                         | `assessFinesFor` inside `fines.facade.ts`.          |
+| Running the batch twice does not create duplicate fines per loan.      | Idempotency via `findByLoanId` before each save.    |
+| Threshold crossing triggers `Membership.suspend` exactly once.         | Per-member loop inside `processOverdueLoans`.       |
+| A member already suspended is not re-suspended.                        | Status check before calling `suspend`.              |
+| `payFine` on an already-paid fine throws `FineAlreadyPaidError`.       | `payFine` inside `fines.facade.ts`.                 |
+
+### Domain events emitted
+
+- `FineAssessed` — one per fine recorded (`fineId`, `memberId`, `loanId`, `amountCents`, `assessedAt`).
+- `MemberAutoSuspended` — one per threshold-crossing suspension (`memberId`, `totalUnpaidCents`, `thresholdCents`, `suspendedAt`).
+
+### Errors
+
+| Error                     | HTTP status | Meaning                                     |
+|---------------------------|-------------|---------------------------------------------|
+| `FineNotFoundError`       | 404         | No fine exists with the given id.           |
+| `FineAlreadyPaidError`    | 409         | The fine has already been paid once.        |
+| `MemberNotFoundError`     | 404         | Re-thrown from Membership during assess.    |
+
+### Mid-batch failure — the deliberately not-atomic bit
+
+`processOverdueLoans` is **not** wrapped in a transaction. Each member's `save fine → publish FineAssessed → (if threshold crossed) suspend → publish MemberAutoSuspended` triple runs independently. If `suspend` throws on member 1, member 1's fine and `FineAssessed` event remain persisted, and the error propagates before member 2 is reached. This is the intended teaching shape: the fine is a recorded fact about a loan; a failure to suspend does not unrecord it.
+
+This is the behaviour the canonical `ThrowingOnceMembershipFacade` test in `fines.facade.spec.ts` pins down — and is the reason that test is the canonical justified hand-rolled-fake example referenced in `GUIDE.md` Principle 7.
+
+---
+
 ## What the application does *not* do
 
 Deliberately out of scope, to keep the teaching focus on testing rather than modelling:
 
 - No authentication or authorization. Anyone hitting the HTTP API can act as any member or librarian.
-- No payments, fines, or billing.
+- No payment processing or billing. Fines are recorded and paid as a boolean flag (`paidAt`); there is no gateway, no refunds, no partial payments, no waivers.
+- No automatic reinstatement of a suspended member on payment — an operator does that via Membership directly.
 - No notifications or emails. Events are emitted but no subscriber consumes them.
 - No search beyond ISBN lookup and list-all.
 - No branch / multi-location concept — one shelf, one system.
@@ -142,5 +199,10 @@ For when you want to curl the thing:
 | `GET    /loans/overdue?now=ISO`            | List overdue loans at a moment in time. |
 | `GET    /members/:memberId/loans`          | List a member's loans.                  |
 | `POST   /reservations`                     | Reserve a book.                         |
+| `POST   /members/:memberId/fines/assessments` | Assess fines for one member's overdue loans. |
+| `POST   /fines/batch/process`              | Run the overdue-fines batch across all members. |
+| `GET    /members/:memberId/fines`          | List a member's fines.                  |
+| `GET    /fines/:fineId`                    | Look up a single fine.                  |
+| `PATCH  /fines/:fineId/paid`               | Mark a fine paid.                       |
 
 Run `pnpm --filter library start:dev` to hit them.

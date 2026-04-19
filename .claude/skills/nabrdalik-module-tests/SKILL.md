@@ -44,9 +44,15 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
    - Guide: [GUIDE.md#principle-6](../../../GUIDE.md#principle-6--dont-let-io-escape-the-module)
    - Demo: [apps/library/src/catalog/catalog.configuration.ts](../../../apps/library/src/catalog/catalog.configuration.ts)
 
-7. **Module boundaries.** Touch other modules only through their **public facades** — never their internals, and never your own repository. In TypeScript this is cleanest when you let the other module hand you its facade via its own factory (`createXFacade()`) — the factory wires zero-I/O in-memory defaults and *is* the test double. Hand-roll a fake facade only when you need to force an exotic failure the real in-memory version cannot reach.
+7. **Module boundaries.** Touch other modules only through their **public facades** — never their internals, and never your own repository. Two tools in the toolbox; choose by what the test needs to observe:
+   - **Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.**
+   - **Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.**
+
+   Justified hand-rolls: inducing specific failure timing, forcing mid-operation exceptions, simulating a collaborator not yet built. NOT justified: convenience, avoiding repository setup, dodging sample-data builders, mocking call counts.
    - Guide: [GUIDE.md#principle-7](../../../GUIDE.md#principle-7--module-boundaries-use-other-modules-facades-never-their-internals)
-   - Demo: [apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts) (uses real `createCatalogFacade` + `createMembershipFacade`)
+   - Default demo: [apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts) (real `createCatalogFacade` + `createMembershipFacade`)
+   - Canonical justified hand-roll: [apps/library/src/fines/fines.facade.spec.ts](../../../apps/library/src/fines/fines.facade.spec.ts) — the `ThrowingOnceMembershipFacade` at the bottom of the file forces `Membership.suspend` to throw mid-batch, a behaviour the real facade cannot produce. See the comment block at the point of use.
+   - Second justified hand-roll: [apps/library/src/lending/lending.reservations.spec.ts](../../../apps/library/src/lending/lending.reservations.spec.ts) — `fakeCatalogFacade()` / `alwaysEligibleMembership()` keep the DSL readable by holding the monotonic clock.
 
 8. **Keep information to minimum.** Explicit = crucial to understanding the requirement. Implicit = can be taken for granted. Ask "is this crucial?" on every line.
    - Guide: [GUIDE.md#principle-8](../../../GUIDE.md#principle-8--keep-information-to-minimum)
@@ -68,12 +74,40 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
 
 Run through this every time. If any item is "no", fix the design before writing the test.
 
-- [ ] Reach into another module **only through its public facade**. Prefer the other module's real factory-wired facade (`createXFacade()`) — it's already in-memory. Hand-roll a fake only to force failures the real one cannot produce.
+- [ ] Reach into another module **only through its public facade**. **Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.** **Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.**
 - [ ] Enter your own module **only through its facade**. Tests never touch the repository interface directly.
 - [ ] Use the module's **sample-data builder** and override only the minimum the test needs.
 - [ ] **No I/O** in unit tests — no DB, no HTTP client, no filesystem.
 - [ ] Assert on **observable outcome** — returned DTOs, emitted events, or state visible through the facade. Never on private fields or internal maps.
 - [ ] For multi-write atomicity, route writes through the module's `TransactionalContext` so a unit test can prove rollback by forcing the last step to throw.
+
+## Cross-module boundary — real facade via factory vs hand-rolled fake
+
+Both tools are legitimate. The decision is about what the test needs to observe, not about which is "more correct."
+
+**Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.**
+
+- The factory produces a fully-wired in-memory facade. Using it is strictly less code than hand-rolling one.
+- Real behaviour runs through the real contract — a test like "ineligible member → borrow fails" proves the cross-module seam, not a script you wrote.
+- Seeding cost is low: `sampleNewMember({ email: '…' })` is one line. No fake needed.
+
+**Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.**
+
+Justified hand-roll cases:
+1. **Inducing specific failure timing** — throw on the first call of a batch; fail on the Nth call and succeed otherwise.
+2. **Forcing mid-operation exceptions** — "what happens if `Membership.suspend` throws mid-batch after some fines were already recorded?"
+3. **Simulating a collaborator not yet built** — you are working in parallel with another team, and the dependency is stubbed on the other side.
+4. **Forcing a behavior the real implementation refuses to produce** — a repository returning malformed data, so defensive code can be exercised.
+
+NOT justified:
+1. Convenience — "it's easier to write a fake than to read the factory." Read the factory once.
+2. Avoiding repository setup — in-memory repos are `Map`s; there is no setup cost to avoid.
+3. Dodging sample-data builders — one line of `sampleNewThing({…})` beats a custom fake.
+4. Mocking call counts — if you are asserting "`findX` was called 3 times," you have drifted away from behaviour-based testing. Assert on the observable outcome.
+
+Canonical justified example: `apps/library/src/fines/fines.facade.spec.ts` — the `ThrowingOnceMembershipFacade` at the bottom of the file wraps a real `createMembershipFacade()` and throws once on `suspend`. Every other test in that file uses real factories. The prose comment block at the point of use names Principle 7 and states why the real facade cannot reproduce the moment being tested.
+
+Second justified example: `apps/library/src/lending/lending.reservations.spec.ts` — `fakeCatalogFacade()` and `alwaysEligibleMembership()` exist so the reservation-queue DSL can hold a monotonically advancing clock without drowning in real-book / real-member setup.
 
 ## Do NOT do
 
@@ -84,6 +118,7 @@ These are failure modes — if the test looks like this, the design is wrong.
 - Do **not** test private or class-internal state. If you need to assert it, expose a facade query.
 - Do **not** use `vi.mock` for collaborators that live inside the same module.
 - Do **not** reach into another module's internals — go through its `index.ts` barrel only.
+- Do **not** hand-roll a fake facade for convenience, to avoid repository setup, to dodge sample-data builders, or to count method calls. See the decision criteria above.
 
 ## Examples (canonical reads in the demo)
 
@@ -108,7 +143,7 @@ Read these in order — each one adds one teaching point:
 2. **Write the facade's public API first.** Let the tests drive the shape of arguments and return types.
 3. **Write the facade spec** using `create<Name>Facade({ /* overrides */ })` — never `Test.createTestingModule`. Tests run without the Nest container.
 4. **Use the sample-data builder** with overrides inside tests. Default values carry the "boring" fields; overrides carry the fields that matter for this test.
-5. **For cross-module dependencies**, pass the *real* facade of the other module, wired via its own `createXFacade()` factory — that is already a zero-I/O test double. Write hand-rolled fakes only when you need to force a specific failure the real in-memory facade cannot reach (e.g., simulate the other module throwing mid-operation). Never use auto-mocks (`vi.mock`) for sibling facades.
+5. **For cross-module dependencies**, apply the two-tool rule: **Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.** **Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.** Justified hand-roll cases: inducing specific failure timing, forcing mid-operation exceptions, simulating a collaborator not yet built. NOT justified: convenience, avoiding repository setup, dodging sample-data builders, mocking call counts. Canonical example of the justified case: `apps/library/src/fines/fines.facade.spec.ts` (Slice 5) — the `ThrowingOnceMembershipFacade` forces `Membership.suspend` to throw mid-batch. Never use auto-mocks (`vi.mock`) for sibling facades.
 6. **For atomicity across multiple writes**, thread a `TransactionalContext` through your repository calls. The in-memory implementation stages writes and commits on success, discards on throw. Write one test that stubs the last step to throw and asserts nothing persisted.
 
 ## Reference templates
