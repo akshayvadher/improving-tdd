@@ -44,9 +44,9 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
    - Guide: [GUIDE.md#principle-6](../../../GUIDE.md#principle-6--dont-let-io-escape-the-module)
    - Demo: [apps/library/src/catalog/catalog.configuration.ts](../../../apps/library/src/catalog/catalog.configuration.ts)
 
-7. **Module boundaries.** Mock **other modules' facades** — never your own internals. This forces behaviour-testing across modules and keeps each module's repo honest.
-   - Guide: [GUIDE.md#principle-7](../../../GUIDE.md#principle-7--module-boundaries-mock-other-modules-facades)
-   - Demo: [apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts)
+7. **Module boundaries.** Touch other modules only through their **public facades** — never their internals, and never your own repository. In TypeScript this is cleanest when you let the other module hand you its facade via its own factory (`createXFacade()`) — the factory wires zero-I/O in-memory defaults and *is* the test double. Hand-roll a fake facade only when you need to force an exotic failure the real in-memory version cannot reach.
+   - Guide: [GUIDE.md#principle-7](../../../GUIDE.md#principle-7--module-boundaries-use-other-modules-facades-never-their-internals)
+   - Demo: [apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts) (uses real `createCatalogFacade` + `createMembershipFacade`)
 
 8. **Keep information to minimum.** Explicit = crucial to understanding the requirement. Implicit = can be taken for granted. Ask "is this crucial?" on every line.
    - Guide: [GUIDE.md#principle-8](../../../GUIDE.md#principle-8--keep-information-to-minimum)
@@ -68,8 +68,8 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
 
 Run through this every time. If any item is "no", fix the design before writing the test.
 
-- [ ] Mock **other** modules' facades — never your own collaborators.
-- [ ] Enter the system **only through the facade**. Tests never touch the repository interface directly.
+- [ ] Reach into another module **only through its public facade**. Prefer the other module's real factory-wired facade (`createXFacade()`) — it's already in-memory. Hand-roll a fake only to force failures the real one cannot produce.
+- [ ] Enter your own module **only through its facade**. Tests never touch the repository interface directly.
 - [ ] Use the module's **sample-data builder** and override only the minimum the test needs.
 - [ ] **No I/O** in unit tests — no DB, no HTTP client, no filesystem.
 - [ ] Assert on **observable outcome** — returned DTOs, emitted events, or state visible through the facade. Never on private fields or internal maps.
@@ -91,7 +91,7 @@ Read these in order — each one adds one teaching point:
 
 - **[apps/library/src/catalog/catalog.facade.spec.ts](../../../apps/library/src/catalog/catalog.facade.spec.ts)** — the simplest template. Facade + in-memory repo + sample builder. No mocks. No events.
 - **[apps/library/src/membership/membership.facade.spec.ts](../../../apps/library/src/membership/membership.facade.spec.ts)** — the carbon copy. Shows the template repeats cleanly for a second module.
-- **[apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts)** — the cross-module example. Hand-written fakes for Catalog and Membership facades; **real** Lending repo and event bus; atomicity test using `TransactionalContext`.
+- **[apps/library/src/lending/lending.facade.spec.ts](../../../apps/library/src/lending/lending.facade.spec.ts)** — the cross-module example. **Real** `CatalogFacade` and `MembershipFacade` wired via their own factories (no hand-rolled fakes); **real** Lending repo and event bus; atomicity test using `TransactionalContext` with a narrow `ThrowingOnceReservationRepository` for failure injection.
 - **[apps/library/src/lending/lending.reservations.spec.ts](../../../apps/library/src/lending/lending.reservations.spec.ts)** — DSL example for principle 11. The test reads like the requirement, not like the implementation.
 
 ## Writing a new module (workflow)
@@ -108,7 +108,7 @@ Read these in order — each one adds one teaching point:
 2. **Write the facade's public API first.** Let the tests drive the shape of arguments and return types.
 3. **Write the facade spec** using `create<Name>Facade({ /* overrides */ })` — never `Test.createTestingModule`. Tests run without the Nest container.
 4. **Use the sample-data builder** with overrides inside tests. Default values carry the "boring" fields; overrides carry the fields that matter for this test.
-5. **For cross-module dependencies**, pass hand-written fakes at the factory boundary (see `lending.configuration.ts`). Do not use auto-mocks for sibling facades.
+5. **For cross-module dependencies**, pass the *real* facade of the other module, wired via its own `createXFacade()` factory — that is already a zero-I/O test double. Write hand-rolled fakes only when you need to force a specific failure the real in-memory facade cannot reach (e.g., simulate the other module throwing mid-operation). Never use auto-mocks (`vi.mock`) for sibling facades.
 6. **For atomicity across multiple writes**, thread a `TransactionalContext` through your repository calls. The in-memory implementation stages writes and commits on success, discards on throw. Write one test that stubs the last step to throw and asserts nothing persisted.
 
 ## Reference templates
@@ -122,6 +122,57 @@ Copy-paste starters in `./references/`. Each file is a placeholder using the dom
 - **[common-interactions.template.ts](./references/common-interactions.template.ts)** — integration-test helper that hides HTTP mechanics (`postNewThing`, `getThing`).
 - **[event-bus-and-collector.template.ts](./references/event-bus-and-collector.template.ts)** — typed `EventBus` with `InMemoryEventBus` whose `collected()` method is the test accessor.
 - **[transactional-unit-of-work.template.ts](./references/transactional-unit-of-work.template.ts)** — small sketch of the `TransactionalContext` interface plus an in-memory stage-and-commit implementation. Flagged "only for atomicity **within** a module".
+
+## Domain invariants live in the facade, not in a pipe
+
+Validation belongs wherever the rule is enforceable by every caller — that is the facade, not the HTTP layer.
+
+- **Transport-level checks** (malformed JSON, wrong types): decorate the DTO with `class-validator` and wire a NestJS `ValidationPipe`. These catch bad requests before the facade runs.
+- **Domain invariants** (non-empty name, well-formed ISBN, duplicate email): put them **inside the facade**, next to the state they guard. If a CLI, another module, or a test calls the facade directly, the rule still applies.
+
+Keep the facade readable by extracting schemas into a `<module>.schema.ts` that lives inside the module:
+
+```ts
+// <module>/<module>.schema.ts
+import { z } from 'zod';
+import { InvalidThingError } from './thing.types.js';
+
+export const NewThingSchema = z.object({
+  name: z.string({ required_error: 'name is required' }).trim().min(1, 'name is required'),
+  // …other fields with trim/format rules
+});
+
+export function parseNewThing(input: unknown): z.infer<typeof NewThingSchema> {
+  const result = NewThingSchema.safeParse(input);
+  if (!result.success) {
+    throw new InvalidThingError(result.error.issues[0]?.message ?? 'invalid input');
+  }
+  return result.data;
+}
+```
+
+Then the facade stays focused on orchestration:
+
+```ts
+async addThing(dto: NewThingDto): Promise<ThingDto> {
+  const { name } = parseNewThing(dto);
+  // …existing uniqueness check, then save
+}
+```
+
+Three rules of thumb:
+
+- **Zod (or whatever validator you chose) is an implementation detail.** The parse helper catches `ZodError` and re-throws the module's own `Invalid<Thing>Error`. Callers, tests, and other modules never see `ZodError`.
+- **Schemas live inside the module.** They are not re-exported from `index.ts`, not shared with other modules. If two modules need the same schema, that is a signal to extract a shared module — not a shared schema utility.
+- **Tests assert on the module's own error type.** `await expect(...).rejects.toThrow(InvalidThingError)` — nothing about zod. This keeps the test suite immune to validator swaps.
+
+Demo: [apps/library/src/catalog/catalog.schema.ts](../../../apps/library/src/catalog/catalog.schema.ts), [apps/library/src/membership/membership.schema.ts](../../../apps/library/src/membership/membership.schema.ts).
+
+## Naming: Facade, not Service
+
+Name the public entry point `<Module>Facade`, not `<Module>Service`. "Service" in a NestJS codebase is a habit — teams grow many services per feature and import any of them from anywhere. "Facade" (in the GoF sense) names a specific role: *the single simplified entry point to a subsystem*. The name carries a contract: outsiders touch this and only this, and `index.ts` exports only this.
+
+Rename it to `Service` and the contract disappears into convention. Tomorrow someone adds `CatalogQueryService`, imports a repository directly, and the boundary leaks.
 
 ## Scope — what this skill does NOT cover
 
