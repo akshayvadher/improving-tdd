@@ -357,61 +357,79 @@ function buildFacade() {
 
 ---
 
-## Principle 7 — Module boundaries: mock other modules' facades
+## Principle 7 — Module boundaries: use other modules' facades, never their internals
 
 ![One module, its dependencies explicit](./.claude/screenshots/ArticleModuleDependencies.png)
 
-When module A depends on module B, unit tests of A mock B's *facade* — never B's internals, never A's own repository. Mocking other modules' public APIs forces behaviour-centric assertions across the seam ("if membership says ineligible, no loan is recorded"). Mocking your own repo just lets you assert on implementation details.
+When module A depends on module B, A's unit tests interact with B *only through B's facade* — never B's internals, never A's own repository. That rule is what the principle protects. Mocking your own repo just lets you assert on implementation details; reaching into B's internals couples A's tests to B's structure.
 
-The Lending module depends on `CatalogFacade` and `MembershipFacade`. Its tests stand up plain hand-written fakes for those:
+The talk's original phrasing is "mock other modules' facades." In the TypeScript port there is an even cleaner answer: **let the other module hand you its facade, wired with its own in-memory defaults.** That is what the `createXFacade()` factories are for (Principle 6). The factory-produced facade runs zero I/O — it *is* the test double. Hand-rolling a fake duplicates work the module already did.
 
-```ts
-// apps/library/src/lending/lending.facade.spec.ts:39-100
-interface FakeCatalog { /* only the methods Lending calls */ }
-function fakeCatalogFacade(): FakeCatalog { /* Map-backed, no vi.fn */ }
-
-interface FakeMembership { /* setEligibility + checkEligibility */ }
-function fakeMembershipFacade(): FakeMembership { /* … */ }
-```
-
-And in the scene builder (`apps/library/src/lending/lending.facade.spec.ts:112-143`):
-
-```ts
-const facade = createLendingFacade({
-  catalogFacade: catalog as unknown as CatalogFacade,
-  membershipFacade: membership as unknown as MembershipFacade,
-  eventBus: bus,
-  newId: sequentialIds('loan'),
-  clock: fixedClock,
-});
-```
-
-**`LoanRepository` is NOT mocked.** Lending owns its loans; the real `InMemoryLoanRepository` and `InMemoryReservationRepository` are behind the facade, exercising real logic. Only Catalog and Membership — the other modules — are faked.
-
-The fake-membership test proves the fake gates real Lending state — not by asserting on a mock call, but by checking that no loan was recorded and no event emitted:
+Lending depends on `CatalogFacade` and `MembershipFacade`. Its tests wire the *real* facades:
 
 ```ts
 // apps/library/src/lending/lending.facade.spec.ts
-it('rejects with MemberIneligibleError when membership reports ineligible, touching nothing', async () => {
-  // given a suspended member and an available copy
-  const copy = scene.seedAvailableCopy();
-  scene.membership.setEligibility('alice', {
-    memberId: 'alice',
-    eligible: false,
-    reason: 'SUSPENDED',
+import { createCatalogFacade } from '../catalog/catalog.configuration.js';
+import { createMembershipFacade } from '../membership/membership.configuration.js';
+
+function buildSceneWith(extra: Partial<LendingOverrides>): Scene {
+  const catalog = createCatalogFacade({ newId: sequentialIds('cat') });
+  const membership = createMembershipFacade({ newId: sequentialIds('mem') });
+  const bus = new InMemoryEventBus();
+  const facade = createLendingFacade({
+    catalogFacade: catalog,        // real CatalogFacade, in-memory repo behind it
+    membershipFacade: membership,  // real MembershipFacade, ditto
+    eventBus: bus,
+    newId: sequentialIds('loan'),
+    clock: fixedClock,
+    ...extra,
   });
+  // …seedAvailableCopy() calls the real catalog.addBook + catalog.registerCopy
+  // …seedMember() calls the real membership.registerMember
+}
+```
+
+The ineligibility test reads like production: register a member, suspend them, try to borrow:
+
+```ts
+// apps/library/src/lending/lending.facade.spec.ts
+it('rejects with MemberIneligibleError when the member is suspended, touching nothing', async () => {
+  // given a suspended member and an available copy
+  const copy = await scene.seedAvailableCopy();
+  const alice = await scene.seedMember('Alice');
+  await scene.membership.suspend(alice.memberId);
 
   // when the member tries to borrow
-  await expect(scene.facade.borrow('alice', copy.copyId)).rejects.toBeInstanceOf(
+  await expect(scene.facade.borrow(alice.memberId, copy.copyId)).rejects.toBeInstanceOf(
     MemberIneligibleError,
   );
 
   // then no loan was recorded, no event emitted, and the copy is still available
-  expect(await scene.facade.listLoansFor('alice')).toEqual([]);
+  expect(await scene.facade.listLoansFor(alice.memberId)).toEqual([]);
   expect(scene.bus.collected()).toEqual([]);
-  expect(scene.catalog.findCopy(copy.copyId).status).toBe(CopyStatus.AVAILABLE);
+  expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.AVAILABLE);
 });
 ```
+
+### Why this is Principle 7 in spirit, not a deviation
+
+- Lending still only touches Catalog and Membership *through their public facades*. It never imports a `CatalogRepository`, never pokes at `member.status`.
+- `LoanRepository` and `ReservationRepository` — Lending's OWN data — stay behind Lending's facade. The principle still forbids Lending's tests from reaching into them.
+- The test still proves the behavioural contract across the seam ("ineligible member → no loan, no event") — it just uses real Membership behaviour rather than a scripted fake.
+
+### When to hand-roll a fake anyway
+
+Reach for a hand-written fake of another module's facade when the real in-memory version cannot reach the state you need to test:
+
+- You want the other module to throw a specific error at a specific call (e.g., "what if Catalog's `markCopyAvailable` fails after Lending commits?"). The factory-wired real facade is too well-behaved to reproduce that.
+- The other module is slow or nondeterministic even in memory (rare, but possible — think of a module whose in-memory version still opens files).
+- You want to freeze the contract A depends on as test documentation, and changes to B should not break A's tests.
+
+For the cases above, Lending keeps the option — `createLendingFacade` accepts any object matching the `CatalogFacade` / `MembershipFacade` shapes — but the demo never needs it.
+
+### Lending's own repos stay in-memory, hand-armable
+
+One hand-rolled double *does* stay: `ThrowingOnceReservationRepository`. But that is Lending's OWN reservation repo, not a cross-module fake — it exists only to force a mid-transaction failure and prove the atomicity contract. Principle 5 (in-memory doubles for your own data) with a tiny bit of failure injection.
 
 ---
 
