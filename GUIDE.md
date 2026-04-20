@@ -612,9 +612,13 @@ The controller is an adapter; the facade is the domain port. They have different
 
 It says nothing about domain math, event emission, or repository state — those live in `fines.facade.spec.ts`.
 
-**The one Principle-7 exception this pattern licenses.**
+**The one Principle-7 exception this pattern licenses — and the harness that makes it ergonomic.**
 
-The controller spec uses a **recording fake of its own facade** (`FakeFacade` at `fines.controller.spec.ts:29-75`) and asserts on call args. Elsewhere in the codebase this would be a violation — you do not mock your own collaborators. Here it is the right tool because the test is *literally about the adapter seam*. The facade's own behavior is exhaustively covered by `fines.facade.spec.ts` against real factory-wired Catalog + Membership + Lending; repeating any of that here would be duplication. Keep the recording-fake surface *minimal* — only the methods the controller calls, and the test asserts on call args that matter (the `Date` argument), not on call counts as a correctness proxy.
+The controller spec uses a **recording fake of its own facade** (`FakeFacade` at `fines.controller.spec.ts:29-75`) and asserts on call args. Elsewhere in the codebase this would be a violation — you do not mock your own collaborators. Here it is the right tool because the test is *literally about the adapter seam*. The facade's own behavior is exhaustively covered by `fines.facade.spec.ts` against real factory-wired Catalog + Membership + Lending; repeating any of that here would be duplication.
+
+The recording fake only pays off because it is paired with a **harness** — `buildHarness(responders)` at `fines.controller.spec.ts:77-91` wires the Nest testing module, installs `DomainErrorFilter`, initializes the app, and returns `{ app, calls, facade }`. Each `it()` block then declares only the facade responses that matter for that test — for example `buildHarness({ payFine: async () => { throw new FineAlreadyPaidError('fine-9'); } })` — and the harness swallows the rest of the wiring. Without the harness, every test would repeat the Nest bootstrap and manual call-recording plumbing; with it, each test reads as "given this facade behaviour, when I hit this endpoint, then this status + body."
+
+Keep the recording-fake surface *minimal* — only the methods the controller calls. The test asserts on call args that matter (the `Date` argument, the path param) rather than on call counts as a correctness proxy. And keep the harness spec-local — it is not exported — because the adapter's wiring (filters, pipes, guards) varies per module.
 
 **Rule of thumb:**
 
@@ -649,15 +653,19 @@ expect(await dsl.queueFor(book)).toEqual(['alice', 'bob', 'carol']);
 
 ---
 
-## Test scaffolding — scene, DSL, and when to use which
+## Test scaffolding — builder, scene, DSL, harness — and when to use which
 
-Principle 9 names sample-data builders; Principle 11 names DSLs. There is a third companion pattern the demo leans on but has not named until now — the **scene** — and a simple decision rule for picking between the three.
+Principle 9 names sample-data builders; Principle 11 names DSLs. The demo leans on two more named patterns — **scene** and **harness** — that were not called out until now. Together they cover the four shapes of test setup this codebase uses.
 
 **Sample-data builder** — per-DTO defaults. `sampleNewBook({ isbn })` fills every field the test does not care about. Lives in `<module>/sample-<name>-data.ts`. See Principle 9.
 
-**Scene** — a function that wires a whole test world: real facade(s) via their factories, an in-memory event bus, a repository handle, a shared clock, and named seed helpers. Returns an object the test reaches into directly. Canonical example: `apps/library/src/fines/testing/scene.ts` — `buildScene()` returns `{ fines, catalog, membership, lending, bus, seedMember, seedOverdueLoanFor, … }`. A more modest inline variant lives as `buildScene()` / `buildSceneWith()` at the top of `apps/library/src/lending/lending.facade.spec.ts`.
+**Scene** — a function that wires a whole domain test world: real facade(s) via their factories, an in-memory event bus, a repository handle, a shared clock, and named seed helpers. Returns a **domain-shaped** object the test reaches into directly. Canonical example: `apps/library/src/fines/testing/scene.ts` — `buildScene()` returns `{ fines, catalog, membership, lending, bus, seedMember, seedOverdueLoanFor, … }`. A more modest inline variant lives as `buildScene()` / `buildSceneWith()` at the top of `apps/library/src/lending/lending.facade.spec.ts`.
 
 **DSL** — a fluent wrapper over one or more facades whose verbs read like the requirement. `after(alice).reserves(book)`, `queueFor(book)`. Lives in `<module>/testing/<concept>-dsl.ts`. See Principle 11.
+
+**Harness** — a function that wires an adapter test world: a Nest testing module, a recording fake of the facade, a domain-error filter, and an initialized `INestApplication`. Returns an **infrastructure-shaped** object — typically `{ app, calls, facade }`. Canonical example: `buildHarness(responders)` at `apps/library/src/fines/fines.controller.spec.ts:77-91`. Scenes are for facade specs; harnesses are for controller specs.
+
+The scene / harness split is the key distinction — same underlying idea (one function that builds your test world), but one holds domain collaborators and the other holds HTTP infrastructure. They never mix.
 
 Decision rule — pick by test shape, not by taste:
 
@@ -665,16 +673,18 @@ Decision rule — pick by test shape, not by taste:
 |---|---|
 | Need a DTO with most fields defaulted | **Sample-data builder** |
 | One actor, one facade call, inspect DTOs + events + repo | **Scene + named seed helpers** |
-| Multiple actors, ordered steps, queue- or tree-shaped assertions | **DSL** |
+| Multiple actors, ordered steps, queue- or tree-shaped assertions | **DSL** (usually layered on top of a scene) |
 | Provoke a specific failure at a specific moment | **Narrow fault-injection wrapper** on top of a scene (Principle 7 escape hatch) |
+| HTTP routing, status codes, serialization, error-filter mapping | **Harness + recording fake facade** (see "Controller unit specs" above) |
 
-These patterns *compose*. The reservation DSL takes a scene (`ReservationScene` at `reservation-dsl.ts:11-14`) and wraps it. The atomicity tests take the Lending scene and drop in a `ThrowingOnceReservationRepository` (`lending.facade.spec.ts:356-384`). Start with a sample-data builder; promote to a scene when the same wiring repeats across tests; promote to a DSL only when the *sequence of actions* is what the test is about and direct facade calls obscure it.
+These patterns *compose*. The reservation DSL takes a scene (`ReservationScene` at `reservation-dsl.ts:11-14`) and wraps it. The atomicity tests take the Lending scene and drop in a `ThrowingOnceReservationRepository` (`lending.facade.spec.ts:356-384`). The Fines controller harness layers a recording fake inside `Test.createTestingModule` so each `it()` block declares only the facade responses that matter (`fines.controller.spec.ts:119`, `164`, `186`, `205-209`, `231`, `251-263`). Start with a sample-data builder; promote to a scene when the same domain wiring repeats across tests; promote to a DSL only when the *sequence of actions* is what the test is about and direct facade calls obscure it; reach for a harness only when you are testing the HTTP adapter.
 
-Three nudges:
+Four nudges:
 
 - **Do not introduce a DSL for CRUD-shaped tests.** Catalog and Membership are flat create/update/query — a DSL buys nothing.
 - **Scenes stay module-local.** `fines/testing/scene.ts` lives inside Fines. If a second module needs the same scene, that is a signal to extract a shared module — not a shared test folder.
-- **Name the wrapper after what it holds, not how it is built.** `ReservationScene`, not `TestContext`.
+- **Harnesses stay spec-local.** The `buildHarness` in `fines.controller.spec.ts` is not exported. Each controller spec owns its harness because the adapter's wiring (filters, pipes, guards) varies per module.
+- **Name the wrapper after what it holds, not how it is built.** `ReservationScene`, not `TestContext`. `Harness`, not `SetupResult`.
 
 ---
 

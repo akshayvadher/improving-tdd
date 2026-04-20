@@ -65,19 +65,26 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
 10. **Common interactions for integration.** Hide HTTP mechanics behind meaningful helpers (`postNewBook(app, dto)`, `getBook(app, isbn)`). Developers should not re-think endpoint, method, payload, or serialization on every test.
     - Guide: [GUIDE.md#principle-10](../../../GUIDE.md#principle-10--common-interactions-for-integration)
     - Demo: [apps/library/test/support/interactions/catalog-interactions.ts](../../../apps/library/test/support/interactions/catalog-interactions.ts)
-    - Companion: [GUIDE.md — Controller unit specs — when they earn their keep](../../../GUIDE.md#controller-unit-specs--when-they-earn-their-keep). Default is integration-only. Add a controller unit spec when integration setup is disproportionate AND the slice has multiple HTTP-shape ACs (status codes, error-filter mapping, server-side `now`, `Date → ISO` serialization) AND you need precise control over facade return values or throws. Canonical example: [apps/library/src/fines/fines.controller.spec.ts](../../../apps/library/src/fines/fines.controller.spec.ts) — licenses a recording fake of its own facade because the test is about the adapter seam, not the domain.
+    - Companion: [GUIDE.md — Controller unit specs — when they earn their keep](../../../GUIDE.md#controller-unit-specs--when-they-earn-their-keep). Default is integration-only. Add a controller unit spec when integration setup is disproportionate AND the slice has multiple HTTP-shape ACs (status codes, error-filter mapping, server-side `now`, `Date → ISO` serialization) AND you need precise control over facade return values or throws. Canonical example: [apps/library/src/fines/fines.controller.spec.ts](../../../apps/library/src/fines/fines.controller.spec.ts) — pairs a **harness** (`buildHarness` at lines 77-91: Nest testing module + `DomainErrorFilter` + initialized `INestApplication`) with a **recording fake of the facade** (`FakeFacade` at lines 29-75). Scenes are for facade specs; harnesses are for controller specs — they never mix.
 
 11. **Show, don't tell (DSL).** If a requirement would be drawn on a whiteboard as a tree or a queue, let the test declare that structure. Build a small DSL so the test sits at the requirement level of abstraction.
     - Guide: [GUIDE.md#principle-11](../../../GUIDE.md#principle-11--show-dont-tell-dsl)
     - Demo: [apps/library/src/lending/lending.reservations.spec.ts](../../../apps/library/src/lending/lending.reservations.spec.ts)
 
-### Companion: scene, DSL, and when to use which
+### Companion: builder, scene, DSL, harness — and when to use which
 
-Builders (Principle 9) and DSLs (Principle 11) have a third partner — the **scene**: a function that wires real facades, repos, bus, clock, and named seed helpers for one test file. Pick by test shape: sample-data builder for defaulted DTOs; scene for "one actor, one call, inspect state"; DSL for ordered multi-actor narratives; narrow fault-injection wrapper on top of a scene for Principle-7 failure timing. Scenes and DSLs *compose* — the reservation DSL wraps a scene.
+Four named scaffolding patterns in this codebase:
+- **Sample-data builder** (Principle 9) — per-DTO defaults for defaulted fields.
+- **Scene** — one function wiring real facades + repos + bus + clock + seed helpers for a **facade spec**. Domain-shaped return: `{ fines, catalog, seedMember, … }`.
+- **DSL** (Principle 11) — fluent wrapper over facades when the *sequence of actions* is the test. Usually layers on a scene.
+- **Harness** — one function wiring a Nest testing module + recording fake facade + `DomainErrorFilter` + initialized app for a **controller spec**. Infrastructure-shaped return: `{ app, calls, facade }`.
 
-- Guide: [GUIDE.md — Test scaffolding — scene, DSL, and when to use which](../../../GUIDE.md#test-scaffolding--scene-dsl-and-when-to-use-which)
+Scenes are for facade specs; harnesses are for controller specs; they never mix. Scenes and DSLs *compose* — the reservation DSL wraps a scene.
+
+- Guide: [GUIDE.md — Test scaffolding — builder, scene, DSL, harness — and when to use which](../../../GUIDE.md#test-scaffolding--builder-scene-dsl-harness--and-when-to-use-which)
 - Scene demo: [apps/library/src/fines/testing/scene.ts](../../../apps/library/src/fines/testing/scene.ts)
 - DSL-over-scene demo: [apps/library/src/lending/testing/reservation-dsl.ts](../../../apps/library/src/lending/testing/reservation-dsl.ts)
+- Harness demo: [apps/library/src/fines/fines.controller.spec.ts](../../../apps/library/src/fines/fines.controller.spec.ts) (see `buildHarness` at lines 77-91)
 
 ## Checklist before writing a test
 
