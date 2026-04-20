@@ -70,6 +70,14 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
     - Guide: [GUIDE.md#principle-11](../../../GUIDE.md#principle-11--show-dont-tell-dsl)
     - Demo: [apps/library/src/lending/lending.reservations.spec.ts](../../../apps/library/src/lending/lending.reservations.spec.ts)
 
+### Companion: scene, DSL, and when to use which
+
+Builders (Principle 9) and DSLs (Principle 11) have a third partner — the **scene**: a function that wires real facades, repos, bus, clock, and named seed helpers for one test file. Pick by test shape: sample-data builder for defaulted DTOs; scene for "one actor, one call, inspect state"; DSL for ordered multi-actor narratives; narrow fault-injection wrapper on top of a scene for Principle-7 failure timing. Scenes and DSLs *compose* — the reservation DSL wraps a scene.
+
+- Guide: [GUIDE.md — Test scaffolding — scene, DSL, and when to use which](../../../GUIDE.md#test-scaffolding--scene-dsl-and-when-to-use-which)
+- Scene demo: [apps/library/src/fines/testing/scene.ts](../../../apps/library/src/fines/testing/scene.ts)
+- DSL-over-scene demo: [apps/library/src/lending/testing/reservation-dsl.ts](../../../apps/library/src/lending/testing/reservation-dsl.ts)
+
 ## Checklist before writing a test
 
 Run through this every time. If any item is "no", fix the design before writing the test.

@@ -610,6 +610,35 @@ expect(await dsl.queueFor(book)).toEqual(['alice', 'bob', 'carol']);
 
 ---
 
+## Test scaffolding — scene, DSL, and when to use which
+
+Principle 9 names sample-data builders; Principle 11 names DSLs. There is a third companion pattern the demo leans on but has not named until now — the **scene** — and a simple decision rule for picking between the three.
+
+**Sample-data builder** — per-DTO defaults. `sampleNewBook({ isbn })` fills every field the test does not care about. Lives in `<module>/sample-<name>-data.ts`. See Principle 9.
+
+**Scene** — a function that wires a whole test world: real facade(s) via their factories, an in-memory event bus, a repository handle, a shared clock, and named seed helpers. Returns an object the test reaches into directly. Canonical example: `apps/library/src/fines/testing/scene.ts` — `buildScene()` returns `{ fines, catalog, membership, lending, bus, seedMember, seedOverdueLoanFor, … }`. A more modest inline variant lives as `buildScene()` / `buildSceneWith()` at the top of `apps/library/src/lending/lending.facade.spec.ts`.
+
+**DSL** — a fluent wrapper over one or more facades whose verbs read like the requirement. `after(alice).reserves(book)`, `queueFor(book)`. Lives in `<module>/testing/<concept>-dsl.ts`. See Principle 11.
+
+Decision rule — pick by test shape, not by taste:
+
+| Test shape | Pattern |
+|---|---|
+| Need a DTO with most fields defaulted | **Sample-data builder** |
+| One actor, one facade call, inspect DTOs + events + repo | **Scene + named seed helpers** |
+| Multiple actors, ordered steps, queue- or tree-shaped assertions | **DSL** |
+| Provoke a specific failure at a specific moment | **Narrow fault-injection wrapper** on top of a scene (Principle 7 escape hatch) |
+
+These patterns *compose*. The reservation DSL takes a scene (`ReservationScene` at `reservation-dsl.ts:11-14`) and wraps it. The atomicity tests take the Lending scene and drop in a `ThrowingOnceReservationRepository` (`lending.facade.spec.ts:356-384`). Start with a sample-data builder; promote to a scene when the same wiring repeats across tests; promote to a DSL only when the *sequence of actions* is what the test is about and direct facade calls obscure it.
+
+Three nudges:
+
+- **Do not introduce a DSL for CRUD-shaped tests.** Catalog and Membership are flat create/update/query — a DSL buys nothing.
+- **Scenes stay module-local.** `fines/testing/scene.ts` lives inside Fines. If a second module needs the same scene, that is a signal to extract a shared module — not a shared test folder.
+- **Name the wrapper after what it holds, not how it is built.** `ReservationScene`, not `TestContext`.
+
+---
+
 ## Ports & gaps — where the TypeScript port diverges from Groovy/Spring
 
 The talk is Java and Spock. Some of Jakub's examples rely on language features that do not exist in TypeScript; the port uses the closest honest equivalent and calls out the gap.
