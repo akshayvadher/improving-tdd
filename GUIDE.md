@@ -589,6 +589,45 @@ export function markCopyUnavailable(app: INestApplication, copyId: string): Http
 
 ---
 
+## Controller unit specs — when they earn their keep
+
+Three of the four modules (Catalog, Membership, Lending) have no dedicated controller spec. Fines has one (`apps/library/src/fines/fines.controller.spec.ts`). The asymmetry is deliberate and worth naming — the rule is about **setup cost** and **what is being specified**, not "always write one" or "never write one."
+
+**Default: skip it.** Routing, status codes, and serialization are covered by the crucial-path integration test (`apps/library/test/<module>.crucial-path.integration.spec.ts`). When the module's integration setup is cheap — a book, a member, a copy — a separate controller spec just duplicates coverage.
+
+**Write one when the following three conditions hold together:**
+
+1. **Setup for the integration test is disproportionate.** Fines' integration test needs the whole borrow graph (Catalog + Membership + Lending overdue loan) to produce even one fine. Spinning that up to assert "POST `/fines/batch/process` returns 204" is wasteful.
+2. **The slice has multiple HTTP-shape acceptance criteria.** Fines' Slice 6 lists AC-6.1 through AC-6.7 — status codes, error-filter mapping (`FineNotFoundError → 404`, `FineAlreadyPaidError → 409`), server-side `Date` construction, `Date → ISO` serialization. Each is a crisp one-liner when asserted in isolation and a smear of setup when rolled into an integration test.
+3. **You need precise control over what the facade returns or throws.** Proving "a second `payFine` call surfaces `FineAlreadyPaidError` as 409" (`fines.controller.spec.ts:249-279`) requires the facade to throw on cue. Real factory-wired facades cannot produce that on a specific call without state choreography.
+
+**What the controller spec specifies — and what it does NOT.**
+
+The controller is an adapter; the facade is the domain port. They have different contracts and different collaborators. The controller spec asserts on:
+
+- URL + method + path params + status code
+- JSON shape of the response body (including `Date → ISO` serialization)
+- Which facade method received which arguments, and that any `now` is server-constructed
+- `DomainErrorFilter` mapping (typed error → HTTP status)
+
+It says nothing about domain math, event emission, or repository state — those live in `fines.facade.spec.ts`.
+
+**The one Principle-7 exception this pattern licenses.**
+
+The controller spec uses a **recording fake of its own facade** (`FakeFacade` at `fines.controller.spec.ts:29-75`) and asserts on call args. Elsewhere in the codebase this would be a violation — you do not mock your own collaborators. Here it is the right tool because the test is *literally about the adapter seam*. The facade's own behavior is exhaustively covered by `fines.facade.spec.ts` against real factory-wired Catalog + Membership + Lending; repeating any of that here would be duplication. Keep the recording-fake surface *minimal* — only the methods the controller calls, and the test asserts on call args that matter (the `Date` argument), not on call counts as a correctness proxy.
+
+**Rule of thumb:**
+
+| Module shape | What to write |
+|---|---|
+| Cheap integration setup (one book + one member) | Crucial-path integration test only |
+| Expensive integration setup (whole graph) **and** adapter-level ACs (error-filter, serialization, `now` construction) | Crucial-path integration test **plus** controller unit spec |
+| Adapter has no branching logic (one method, one status, no error filter) | Integration test only — a controller spec buys nothing |
+
+`GUIDE.md` does not need a seventh line-format for controllers; apply the same discipline as every other test — one file per contract, assertions at the right level of abstraction.
+
+---
+
 ## Principle 11 — Show, don't tell (DSL)
 
 ![A row of similar things — a queue](./.claude/screenshots/rower.jpeg)

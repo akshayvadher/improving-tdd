@@ -65,6 +65,7 @@ Each principle has: a one-line summary, a link to the guide, and a demo file you
 10. **Common interactions for integration.** Hide HTTP mechanics behind meaningful helpers (`postNewBook(app, dto)`, `getBook(app, isbn)`). Developers should not re-think endpoint, method, payload, or serialization on every test.
     - Guide: [GUIDE.md#principle-10](../../../GUIDE.md#principle-10--common-interactions-for-integration)
     - Demo: [apps/library/test/support/interactions/catalog-interactions.ts](../../../apps/library/test/support/interactions/catalog-interactions.ts)
+    - Companion: [GUIDE.md — Controller unit specs — when they earn their keep](../../../GUIDE.md#controller-unit-specs--when-they-earn-their-keep). Default is integration-only. Add a controller unit spec when integration setup is disproportionate AND the slice has multiple HTTP-shape ACs (status codes, error-filter mapping, server-side `now`, `Date → ISO` serialization) AND you need precise control over facade return values or throws. Canonical example: [apps/library/src/fines/fines.controller.spec.ts](../../../apps/library/src/fines/fines.controller.spec.ts) — licenses a recording fake of its own facade because the test is about the adapter seam, not the domain.
 
 11. **Show, don't tell (DSL).** If a requirement would be drawn on a whiteboard as a tree or a queue, let the test declare that structure. Build a small DSL so the test sits at the requirement level of abstraction.
     - Guide: [GUIDE.md#principle-11](../../../GUIDE.md#principle-11--show-dont-tell-dsl)
