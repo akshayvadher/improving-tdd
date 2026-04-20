@@ -25,7 +25,8 @@ export interface LendingOverrides {
 
 export function createLendingFacade(overrides: LendingOverrides): LendingFacade {
   const loanRepository = overrides.loanRepository ?? new InMemoryLoanRepository();
-  const reservationRepository = overrides.reservationRepository ?? new InMemoryReservationRepository();
+  const reservationRepository =
+    overrides.reservationRepository ?? new InMemoryReservationRepository();
   const eventBus = overrides.eventBus ?? new InMemoryEventBus();
   const txFactory = overrides.txFactory ?? (() => new InMemoryTransactionalContext(eventBus));
   const newId = overrides.newId ?? randomUUID;

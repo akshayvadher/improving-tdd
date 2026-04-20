@@ -11,11 +11,7 @@ import { createLendingFacade, type LendingOverrides } from './lending.configurat
 import type { ReservationDto } from './lending.types.js';
 import type { ReservationRepository } from './reservation.repository.js';
 import type { TransactionalContext } from './transactional-context.js';
-import {
-  CopyUnavailableError,
-  LoanNotFoundError,
-  MemberIneligibleError,
-} from './lending.types.js';
+import { CopyUnavailableError, LoanNotFoundError, MemberIneligibleError } from './lending.types.js';
 import { sampleBorrowRequest, sampleReserveRequest } from './sample-lending-data.js';
 
 function sequentialIds(prefix: string): () => string {
@@ -73,10 +69,7 @@ function buildSceneWith(extra: Partial<LendingOverrides>): Scene {
       copySeq += 1;
       const isbn = `978-${String(copySeq).padStart(10, '0')}`;
       const book = await catalog.addBook(sampleNewBook({ isbn }));
-      const copy = await catalog.registerCopy(
-        book.bookId,
-        sampleNewCopy({ bookId: book.bookId }),
-      );
+      const copy = await catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
       return { copyId: copy.copyId, bookId: copy.bookId };
     },
     async seedMember(name = 'Member') {

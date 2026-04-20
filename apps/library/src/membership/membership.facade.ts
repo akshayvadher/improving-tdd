@@ -81,7 +81,10 @@ export class MembershipFacade {
     return { memberId, eligible: true };
   }
 
-  private async updateMemberStatus(memberId: MemberId, status: MembershipStatus): Promise<MemberDto> {
+  private async updateMemberStatus(
+    memberId: MemberId,
+    status: MembershipStatus,
+  ): Promise<MemberDto> {
     const member = await this.repository.findMemberById(memberId);
     if (!member) {
       throw new MemberNotFoundError(memberId);

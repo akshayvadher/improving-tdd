@@ -1,16 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  CopyStatus,
-  type CatalogFacade,
-  type CopyDto,
-  type CopyId,
-} from '../catalog/index.js';
-import type {
-  EligibilityDto,
-  MemberId,
-  MembershipFacade,
-} from '../membership/index.js';
+import { CopyStatus, type CatalogFacade, type CopyDto, type CopyId } from '../catalog/index.js';
+import type { EligibilityDto, MemberId, MembershipFacade } from '../membership/index.js';
 import { InMemoryEventBus } from '../shared/events/in-memory-event-bus.js';
 import { InMemoryReservationRepository } from './in-memory-reservation.repository.js';
 import { createLendingFacade } from './lending.configuration.js';

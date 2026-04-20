@@ -81,10 +81,14 @@ function detectPodmanSocket(): string | null {
 
 function readPodmanPipe(): string | null {
   try {
-    const result = spawnSync('podman', ['machine', 'inspect', '--format', '{{.ConnectionInfo.PodmanPipe.Path}}'], {
-      timeout: 2000,
-      encoding: 'utf8',
-    });
+    const result = spawnSync(
+      'podman',
+      ['machine', 'inspect', '--format', '{{.ConnectionInfo.PodmanPipe.Path}}'],
+      {
+        timeout: 2000,
+        encoding: 'utf8',
+      },
+    );
     if (result.status !== 0) {
       return null;
     }

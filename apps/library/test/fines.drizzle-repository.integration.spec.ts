@@ -4,10 +4,7 @@ import { createDatabase, type DatabaseHandle } from '../src/db/client.js';
 import { fines } from '../src/db/schema/index.js';
 import { DrizzleFineRepository } from '../src/fines/drizzle-fine.repository.js';
 import { sampleFine } from '../src/fines/sample-fines-data.js';
-import {
-  DOCKER_UNAVAILABLE_MESSAGE,
-  dockerIsAvailable,
-} from './support/require-docker.js';
+import { DOCKER_UNAVAILABLE_MESSAGE, dockerIsAvailable } from './support/require-docker.js';
 import { startPostgres, type PostgresFixture } from './support/testcontainers.js';
 
 // The unit spec exercises FinesFacade + InMemoryFineRepository end-to-end on an
@@ -210,9 +207,7 @@ suite('DrizzleFineRepository (real Postgres)', () => {
     // given no fines saved for this member
 
     // when listFinesForMember is called
-    const fines = await repository.listFinesForMember(
-      '60000000-0000-0000-0000-000000000000',
-    );
+    const fines = await repository.listFinesForMember('60000000-0000-0000-0000-000000000000');
 
     // then an empty array comes back (not undefined, not null)
     expect(fines).toEqual([]);

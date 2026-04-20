@@ -5,12 +5,13 @@ import { sampleNewBook, sampleNewCopy } from '../src/catalog/sample-catalog-data
 import { sampleNewMember } from '../src/membership/sample-membership-data.js';
 import { createTestApp } from './support/app-factory.js';
 import { postNewBook, registerCopy } from './support/interactions/catalog-interactions.js';
-import { borrowCopy, listLoansFor, returnLoan } from './support/interactions/lending-interactions.js';
-import { postNewMember } from './support/interactions/membership-interactions.js';
 import {
-  DOCKER_UNAVAILABLE_MESSAGE,
-  dockerIsAvailable,
-} from './support/require-docker.js';
+  borrowCopy,
+  listLoansFor,
+  returnLoan,
+} from './support/interactions/lending-interactions.js';
+import { postNewMember } from './support/interactions/membership-interactions.js';
+import { DOCKER_UNAVAILABLE_MESSAGE, dockerIsAvailable } from './support/require-docker.js';
 import { startPostgres, type PostgresFixture } from './support/testcontainers.js';
 
 const suite = dockerIsAvailable() ? describe : describe.skip;

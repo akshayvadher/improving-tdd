@@ -8,10 +8,7 @@ import { InvalidMemberError } from './membership.types.js';
 const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export const NewMemberSchema = z.object({
-  name: z
-    .string({ required_error: 'name is required' })
-    .trim()
-    .min(1, 'name is required'),
+  name: z.string({ required_error: 'name is required' }).trim().min(1, 'name is required'),
   email: z
     .string({ required_error: 'email is required' })
     .trim()

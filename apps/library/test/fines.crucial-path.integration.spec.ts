@@ -7,10 +7,7 @@ import type { AppDatabase } from '../src/db/client.js';
 import { DATABASE } from '../src/db/database.module.js';
 import { fines, loans, members } from '../src/db/schema/index.js';
 import { FinesFacade } from '../src/fines/fines.facade.js';
-import type {
-  FineAssessed,
-  MemberAutoSuspended,
-} from '../src/fines/fines.types.js';
+import type { FineAssessed, MemberAutoSuspended } from '../src/fines/fines.types.js';
 import { MembershipStatus } from '../src/membership/index.js';
 import { sampleNewMember } from '../src/membership/sample-membership-data.js';
 import type { DomainEvent } from '../src/shared/events/event-bus.js';
@@ -20,10 +17,7 @@ import { postNewBook, registerCopy } from './support/interactions/catalog-intera
 import { borrowCopy } from './support/interactions/lending-interactions.js';
 import { processOverdueLoans } from './support/interactions/fines-interactions.js';
 import { postNewMember } from './support/interactions/membership-interactions.js';
-import {
-  DOCKER_UNAVAILABLE_MESSAGE,
-  dockerIsAvailable,
-} from './support/require-docker.js';
+import { DOCKER_UNAVAILABLE_MESSAGE, dockerIsAvailable } from './support/require-docker.js';
 import { startPostgres, type PostgresFixture } from './support/testcontainers.js';
 
 const suite = dockerIsAvailable() ? describe : describe.skip;
@@ -68,10 +62,7 @@ async function forceLoanOverdue(
   const now = Date.now();
   const borrowedAt = new Date(now - (daysOverdue + 14) * MS_PER_DAY);
   const dueDate = new Date(now - daysOverdue * MS_PER_DAY + CEIL_CUSHION_MS);
-  await db
-    .update(loans)
-    .set({ borrowedAt, dueDate })
-    .where(eq(loans.loanId, loanId));
+  await db.update(loans).set({ borrowedAt, dueDate }).where(eq(loans.loanId, loanId));
 }
 
 suite('Fines crucial path (HTTP + Postgres)', () => {
@@ -102,17 +93,13 @@ suite('Fines crucial path (HTTP + Postgres)', () => {
       await postNewMember(app, sampleNewMember({ email: 'grace.hopper@example.com' }))
     ).body;
 
-    const firstBook = (
-      await postNewBook(app, sampleNewBook({ isbn: '978-0131103627' }))
-    ).body;
+    const firstBook = (await postNewBook(app, sampleNewBook({ isbn: '978-0131103627' }))).body;
     const firstCopy = (
       await registerCopy(app, firstBook.bookId, sampleNewCopy({ bookId: firstBook.bookId }))
     ).body;
     const firstLoan = (await borrowCopy(app, member.memberId, firstCopy.copyId)).body;
 
-    const secondBook = (
-      await postNewBook(app, sampleNewBook({ isbn: '978-0132350884' }))
-    ).body;
+    const secondBook = (await postNewBook(app, sampleNewBook({ isbn: '978-0132350884' }))).body;
     const secondCopy = (
       await registerCopy(app, secondBook.bookId, sampleNewCopy({ bookId: secondBook.bookId }))
     ).body;
@@ -128,10 +115,7 @@ suite('Fines crucial path (HTTP + Postgres)', () => {
     expect(response.status).toBe(204);
 
     // and the fines table carries exactly two unpaid rows with the expected amount
-    const fineRows = await db
-      .select()
-      .from(fines)
-      .where(eq(fines.memberId, member.memberId));
+    const fineRows = await db.select().from(fines).where(eq(fines.memberId, member.memberId));
     expect(fineRows).toHaveLength(2);
     const expectedAmountCents = DAYS_OVERDUE * DEFAULT_DAILY_RATE_CENTS;
     for (const row of fineRows) {

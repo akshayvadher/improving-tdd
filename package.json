@@ -10,9 +10,12 @@
   },
   "scripts": {
     "test:unit": "pnpm --filter library test:unit",
-    "test:integration": "pnpm --filter library test:integration"
+    "test:integration": "pnpm --filter library test:integration",
+    "format": "biome format --write .",
+    "format:check": "biome format ."
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
     "@types/node": "^20.12.7",
     "@typescript-eslint/eslint-plugin": "^7.7.0",
     "@typescript-eslint/parser": "^7.7.0",

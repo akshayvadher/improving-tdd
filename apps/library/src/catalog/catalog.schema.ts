@@ -11,10 +11,7 @@ function isValidIsbn(raw: string): boolean {
 }
 
 export const NewBookSchema = z.object({
-  title: z
-    .string({ required_error: 'title is required' })
-    .trim()
-    .min(1, 'title is required'),
+  title: z.string({ required_error: 'title is required' }).trim().min(1, 'title is required'),
   authors: z
     .array(z.string().trim())
     .transform((authors) => authors.filter((author) => author.length > 0))

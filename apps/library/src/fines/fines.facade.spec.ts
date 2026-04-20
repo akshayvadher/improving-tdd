@@ -9,11 +9,7 @@ import {
   FIXED_NOW,
   type Scene,
 } from './testing/scene.js';
-import {
-  FineAlreadyPaidError,
-  FineNotFoundError,
-  type FinesConfig,
-} from './fines.types.js';
+import { FineAlreadyPaidError, FineNotFoundError, type FinesConfig } from './fines.types.js';
 
 describe('FinesFacade', () => {
   let scene: Scene;

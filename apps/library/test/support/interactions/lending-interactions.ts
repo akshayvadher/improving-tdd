@@ -8,11 +8,7 @@ function server(app: INestApplication): Agent {
   return request(app.getHttpServer());
 }
 
-export function borrowCopy(
-  app: INestApplication,
-  memberId: string,
-  copyId: string,
-): HttpCall {
+export function borrowCopy(app: INestApplication, memberId: string, copyId: string): HttpCall {
   return server(app).post('/loans').send({ memberId, copyId });
 }
 
@@ -20,11 +16,7 @@ export function returnLoan(app: INestApplication, loanId: string): HttpCall {
   return server(app).patch(`/loans/${loanId}/return`);
 }
 
-export function reserveBook(
-  app: INestApplication,
-  memberId: string,
-  bookId: string,
-): HttpCall {
+export function reserveBook(app: INestApplication, memberId: string, bookId: string): HttpCall {
   return server(app).post('/reservations').send({ memberId, bookId });
 }
 

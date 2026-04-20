@@ -18,10 +18,7 @@ export class DrizzleLoanRepository implements LoanRepository {
     const handle = handleFrom(ctx, this.db);
     const row = toRow(loan);
     ctx.stage(async () => {
-      await handle
-        .insert(loans)
-        .values(row)
-        .onConflictDoUpdate({ target: loans.loanId, set: row });
+      await handle.insert(loans).values(row).onConflictDoUpdate({ target: loans.loanId, set: row });
     });
   }
 

@@ -65,6 +65,9 @@ function statusFor(error: Error): number {
   return HttpStatus.INTERNAL_SERVER_ERROR;
 }
 
-function isInstanceOfAny(error: Error, classes: ReadonlyArray<new (...args: never[]) => Error>): boolean {
+function isInstanceOfAny(
+  error: Error,
+  classes: ReadonlyArray<new (...args: never[]) => Error>,
+): boolean {
   return classes.some((ctor) => error instanceof ctor);
 }

@@ -29,7 +29,8 @@ function resolveConnectionUrl(config: ConfigService): string {
   providers: [
     {
       provide: DATABASE_HANDLE,
-      useFactory: (config: ConfigService): DatabaseHandle => createDatabase(resolveConnectionUrl(config)),
+      useFactory: (config: ConfigService): DatabaseHandle =>
+        createDatabase(resolveConnectionUrl(config)),
       inject: [ConfigService],
     },
     {

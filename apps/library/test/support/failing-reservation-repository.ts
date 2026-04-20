@@ -61,9 +61,7 @@ interface FacadeWithReservationRepo {
  * past that encapsulation to inject a failure — this is the only place the
  * harness is allowed to do so.
  */
-export function installFailingReservationRepo(
-  facade: object,
-): FailingOnceReservationRepository {
+export function installFailingReservationRepo(facade: object): FailingOnceReservationRepository {
   const internals = facade as FacadeWithReservationRepo;
   const wrapper = new FailingOnceReservationRepository(internals.reservations);
   internals.reservations = wrapper;

@@ -118,12 +118,12 @@ describe('MembershipFacade', () => {
     const membership = buildFacade();
 
     // when / then registering a member whose name is blank or whitespace-only
-    await expect(
-      membership.registerMember(sampleNewMember({ name: '' })),
-    ).rejects.toThrow(InvalidMemberError);
-    await expect(
-      membership.registerMember(sampleNewMember({ name: '   ' })),
-    ).rejects.toThrow(InvalidMemberError);
+    await expect(membership.registerMember(sampleNewMember({ name: '' }))).rejects.toThrow(
+      InvalidMemberError,
+    );
+    await expect(membership.registerMember(sampleNewMember({ name: '   ' }))).rejects.toThrow(
+      InvalidMemberError,
+    );
   });
 
   it('rejects registering a member with a malformed email', async () => {
@@ -131,9 +131,9 @@ describe('MembershipFacade', () => {
     const membership = buildFacade();
 
     // when / then registering with emails that are not in a valid format
-    await expect(
-      membership.registerMember(sampleNewMember({ email: '' })),
-    ).rejects.toThrow(InvalidMemberError);
+    await expect(membership.registerMember(sampleNewMember({ email: '' }))).rejects.toThrow(
+      InvalidMemberError,
+    );
     await expect(
       membership.registerMember(sampleNewMember({ email: 'not-an-email' })),
     ).rejects.toThrow(InvalidMemberError);

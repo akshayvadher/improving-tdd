@@ -8,11 +8,7 @@ import { createMembershipFacade } from '../../membership/membership.configuratio
 import { sampleNewMember } from '../../membership/sample-membership-data.js';
 import { InMemoryEventBus } from '../../shared/events/in-memory-event-bus.js';
 import { createFinesFacade } from '../fines.configuration.js';
-import type {
-  FineAssessed,
-  FinesConfig,
-  MemberAutoSuspended,
-} from '../fines.types.js';
+import type { FineAssessed, FinesConfig, MemberAutoSuspended } from '../fines.types.js';
 import { InMemoryFineRepository } from '../in-memory-fine.repository.js';
 import { sampleFinesConfig } from '../sample-fines-data.js';
 
@@ -111,10 +107,7 @@ export function buildScene(overrides: SceneOverrides = {}): Scene {
       copySeq += 1;
       const isbn = `978-${String(copySeq).padStart(10, '0')}`;
       const book = await catalog.addBook(sampleNewBook({ isbn }));
-      const copy = await catalog.registerCopy(
-        book.bookId,
-        sampleNewCopy({ bookId: book.bookId }),
-      );
+      const copy = await catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
       return { copyId: copy.copyId, bookId: copy.bookId };
     },
     async seedOverdueLoanFor(memberId: string, daysOverdue: number) {
@@ -131,9 +124,7 @@ export function buildScene(overrides: SceneOverrides = {}): Scene {
 }
 
 export function assessedEvents(bus: InMemoryEventBus): FineAssessed[] {
-  return bus
-    .collected()
-    .filter((event): event is FineAssessed => event.type === 'FineAssessed');
+  return bus.collected().filter((event): event is FineAssessed => event.type === 'FineAssessed');
 }
 
 export function autoSuspendedEvents(bus: InMemoryEventBus): MemberAutoSuspended[] {

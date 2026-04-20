@@ -19,13 +19,12 @@ import {
 import { DomainErrorFilter } from '../shared/http/domain-error.filter.js';
 import { FinesController } from './fines.controller.js';
 import { FinesFacade } from './fines.facade.js';
-import {
-  FineAlreadyPaidError,
-  FineNotFoundError,
-  type FineDto,
-} from './fines.types.js';
+import { FineAlreadyPaidError, FineNotFoundError, type FineDto } from './fines.types.js';
 import { sampleFine } from './sample-fines-data.js';
 
+/**
+ * NOTE: MAY BE WE CAN USE MOCKS instead of hand rolling things!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+ */
 interface FakeFacade {
   assessFinesFor: (...args: unknown[]) => Promise<FineDto[]>;
   processOverdueLoans: (...args: unknown[]) => Promise<void>;
@@ -45,19 +44,14 @@ interface Harness {
   facade: FakeFacade;
 }
 
-function buildFakeFacade(
-  calls: Call[],
-  responders: Partial<FakeFacade>,
-): FakeFacade {
+function buildFakeFacade(calls: Call[], responders: Partial<FakeFacade>): FakeFacade {
   const record = <T>(
     method: keyof FakeFacade,
     fallback: () => Promise<T>,
   ): ((...args: unknown[]) => Promise<T>) => {
     return async (...args: unknown[]) => {
       calls.push({ method, args });
-      const override = responders[method] as
-        | ((...a: unknown[]) => Promise<T>)
-        | undefined;
+      const override = responders[method] as ((...a: unknown[]) => Promise<T>) | undefined;
       if (override) {
         return override(...args);
       }
@@ -174,7 +168,10 @@ describe('FinesController — HTTP routing', () => {
       // and the response body matches the returned fines
       expect(response.status).toBe(200);
       expect(response.body).toEqual(
-        fines.map((fine) => ({ ...fine, assessedAt: fine.assessedAt.toISOString() })),
+        fines.map((fine) => ({
+          ...fine,
+          assessedAt: fine.assessedAt.toISOString(),
+        })),
       );
     });
   });

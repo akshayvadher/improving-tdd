@@ -9,10 +9,7 @@ import {
   postNewBook,
   registerCopy,
 } from './support/interactions/catalog-interactions.js';
-import {
-  DOCKER_UNAVAILABLE_MESSAGE,
-  dockerIsAvailable,
-} from './support/require-docker.js';
+import { DOCKER_UNAVAILABLE_MESSAGE, dockerIsAvailable } from './support/require-docker.js';
 import { startPostgres, type PostgresFixture } from './support/testcontainers.js';
 
 const suite = dockerIsAvailable() ? describe : describe.skip;

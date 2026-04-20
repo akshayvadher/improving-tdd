@@ -20,10 +20,7 @@ import {
   returnLoan,
 } from './support/interactions/lending-interactions.js';
 import { postNewMember } from './support/interactions/membership-interactions.js';
-import {
-  DOCKER_UNAVAILABLE_MESSAGE,
-  dockerIsAvailable,
-} from './support/require-docker.js';
+import { DOCKER_UNAVAILABLE_MESSAGE, dockerIsAvailable } from './support/require-docker.js';
 import { startPostgres, type PostgresFixture } from './support/testcontainers.js';
 
 // Teaching moment: this is the integration counterpart to the in-memory atomicity
@@ -63,9 +60,8 @@ suite('Lending returnLoan atomicity (real Postgres)', () => {
   it('rolls back the loan update when the fulfillment write fails inside the tx', async () => {
     // given alice borrowed a book and bob has a pending reservation for it
     const book = (await postNewBook(app, sampleNewBook({ isbn: '978-0201485677' }))).body;
-    const copy = (
-      await registerCopy(app, book.bookId, sampleNewCopy({ bookId: book.bookId }))
-    ).body;
+    const copy = (await registerCopy(app, book.bookId, sampleNewCopy({ bookId: book.bookId })))
+      .body;
     const alice = (await postNewMember(app, sampleNewMember({ email: 'alice@atomic.test' }))).body;
     const bob = (await postNewMember(app, sampleNewMember({ email: 'bob@atomic.test' }))).body;
 

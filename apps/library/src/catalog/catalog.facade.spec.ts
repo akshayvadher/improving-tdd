@@ -9,11 +9,7 @@ import {
   InvalidBookError,
   InvalidCopyError,
 } from './catalog.types.js';
-import {
-  sampleNewBook,
-  sampleNewBookWithIsbn,
-  sampleNewCopy,
-} from './sample-catalog-data.js';
+import { sampleNewBook, sampleNewBookWithIsbn, sampleNewCopy } from './sample-catalog-data.js';
 
 // Deterministic id generator so copy/book ids are predictable in assertions.
 function sequentialIds(prefix = 'id'): () => string {
@@ -143,7 +139,9 @@ describe('CatalogFacade', () => {
 
     // when / then adding a book whose title is empty or whitespace-only
     await expect(catalog.addBook(sampleNewBook({ title: '' }))).rejects.toThrow(InvalidBookError);
-    await expect(catalog.addBook(sampleNewBook({ title: '   ' }))).rejects.toThrow(InvalidBookError);
+    await expect(catalog.addBook(sampleNewBook({ title: '   ' }))).rejects.toThrow(
+      InvalidBookError,
+    );
   });
 
   it('rejects adding a book with no authors', async () => {

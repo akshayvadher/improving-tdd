@@ -14,10 +14,7 @@ export class DrizzleFineRepository implements FineRepository {
 
   async saveFine(fine: FineDto): Promise<void> {
     const row = toRow(fine);
-    await this.db
-      .insert(fines)
-      .values(row)
-      .onConflictDoUpdate({ target: fines.fineId, set: row });
+    await this.db.insert(fines).values(row).onConflictDoUpdate({ target: fines.fineId, set: row });
   }
 
   async findFineById(fineId: FineId): Promise<FineDto | undefined> {

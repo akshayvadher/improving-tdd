@@ -22,11 +22,7 @@ export function listBooks(app: INestApplication): HttpCall {
   return server(app).get('/books');
 }
 
-export function registerCopy(
-  app: INestApplication,
-  bookId: string,
-  dto: NewCopyDto,
-): HttpCall {
+export function registerCopy(app: INestApplication, bookId: string, dto: NewCopyDto): HttpCall {
   return server(app).post(`/books/${bookId}/copies`).send(dto);
 }
 
