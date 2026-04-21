@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { BookMetadata } from '../shared/isbn-gateway/book-metadata.js';
 import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
+import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
 import { createCatalogFacade } from './catalog.configuration.js';
+import type { CatalogFacade } from './catalog.facade.js';
 import {
   BookNotFoundError,
   CopyNotFoundError,
@@ -399,3 +401,105 @@ describe('addBook — ISBN enrichment', () => {
     expect(await facade.findBook('978-0134685991')).toEqual(book);
   });
 });
+
+describe('addBook — gateway failures', () => {
+  function buildFacadeWithWrappedGateway(seed: Array<[string, BookMetadata]> = []): {
+    facade: CatalogFacade;
+    gateway: ThrowingOnceIsbnLookupGateway;
+  } {
+    const inner = new InMemoryIsbnLookupGateway();
+    for (const [isbn, metadata] of seed) {
+      inner.seed(isbn, metadata);
+    }
+    const gateway = new ThrowingOnceIsbnLookupGateway(inner);
+    const facade = createCatalogFacade({
+      isbnLookupGateway: gateway,
+      newId: sequentialIds('book'),
+    });
+    return { facade, gateway };
+  }
+
+  it('surfaces the gateway error to the caller when findByIsbn throws mid-addBook', async () => {
+    // given a facade wired to a wrapped gateway with a single-shot failure armed
+    const { facade, gateway } = buildFacadeWithWrappedGateway([
+      ['978-0134685991', { title: 'Gateway Title', authors: ['Gateway Author'] }],
+    ]);
+    gateway.armFailureOnNextLookup(new Error('isbn service is down'));
+
+    // when addBook triggers the armed findByIsbn call
+    // then the exact error surfaces to the caller
+    await expect(
+      facade.addBook({
+        title: 'Client Title',
+        authors: ['Client Author'],
+        isbn: '978-0134685991',
+      }),
+    ).rejects.toThrow('isbn service is down');
+  });
+
+  it('persists nothing after a gateway failure', async () => {
+    // given a facade whose wrapped gateway is seeded AND has a failure armed
+    const { facade, gateway } = buildFacadeWithWrappedGateway([
+      ['978-0134685991', { title: 'Gateway Title', authors: ['Gateway Author'] }],
+    ]);
+    gateway.armFailureOnNextLookup(new Error('isbn service is down'));
+
+    // when addBook is called and rejects
+    await expect(
+      facade.addBook({
+        title: 'Client Title',
+        authors: ['Client Author'],
+        isbn: '978-0134685991',
+      }),
+    ).rejects.toThrow('isbn service is down');
+
+    // then the repository has no record for that ISBN
+    await expect(facade.findBook('978-0134685991')).rejects.toThrow(BookNotFoundError);
+    expect(await facade.listBooks()).toEqual([]);
+  });
+
+  it('succeeds on the next call after a single armed failure (state clears)', async () => {
+    // given a facade with a seeded inner gateway and one armed failure
+    const { facade, gateway } = buildFacadeWithWrappedGateway([
+      ['978-0134685991', { title: 'Gateway Title', authors: ['Gateway Author'] }],
+    ]);
+    gateway.armFailureOnNextLookup(new Error('isbn service is down'));
+
+    // when the first addBook call fires the armed error
+    await expect(
+      facade.addBook({ authors: ['Client Author'], isbn: '978-0134685991' }),
+    ).rejects.toThrow('isbn service is down');
+
+    // and the second addBook call runs with the arming cleared
+    const book = await facade.addBook({ authors: ['Client Author'], isbn: '978-0134685991' });
+
+    // then the second call succeeds with the gateway-enriched title
+    expect(book.title).toBe('Gateway Title');
+    expect(book.authors).toEqual(['Client Author']);
+    expect(book.isbn).toBe('978-0134685991');
+  });
+});
+
+// --- ThrowingOnceIsbnLookupGateway -----------------------------------------
+// Spec-local wrapper that decorates a real in-memory gateway and throws on the
+// next findByIsbn call when armed. Mirrors ThrowingOnceReservationRepository in
+// lending.facade.spec.ts:347-377. Intentionally NOT exported — this is the
+// canonical teaching moment for Principle 5 applied to outbound gateways.
+class ThrowingOnceIsbnLookupGateway implements IsbnLookupGateway {
+  private armedError: Error | null = null;
+
+  constructor(private readonly delegate: IsbnLookupGateway) {}
+
+  armFailureOnNextLookup(error: Error): void {
+    this.armedError = error;
+  }
+
+  async findByIsbn(isbn: string): Promise<BookMetadata | null> {
+    if (this.armedError) {
+      const error = this.armedError;
+      this.armedError = null;
+      throw error;
+    }
+    return this.delegate.findByIsbn(isbn);
+  }
+}
