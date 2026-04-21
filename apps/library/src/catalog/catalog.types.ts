@@ -12,8 +12,8 @@ export const CopyStatus = {
 export type CopyCondition = 'NEW' | 'GOOD' | 'FAIR' | 'POOR';
 
 export interface NewBookDto {
-  title: string;
-  authors: string[];
+  title?: string;
+  authors?: string[];
   isbn: Isbn;
 }
 

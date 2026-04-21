@@ -1,8 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
+import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
+import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
 import type { CatalogRepository } from './catalog.repository.js';
-import { parseNewBook, parseNewCopy } from './catalog.schema.js';
+import { parseIsbn, parseNewBook, parseNewCopy } from './catalog.schema.js';
 import {
   BookNotFoundError,
   CopyNotFoundError,
@@ -24,17 +26,32 @@ export class CatalogFacade {
   constructor(
     private readonly repository: CatalogRepository,
     private readonly newId: IdGenerator = randomUUID,
+    private readonly isbnGateway: IsbnLookupGateway = new InMemoryIsbnLookupGateway(),
   ) {}
 
   async addBook(dto: NewBookDto): Promise<BookDto> {
-    const { title, authors, isbn } = parseNewBook(dto);
+    const isbn = parseIsbn(dto.isbn);
 
-    const existing = await this.repository.findBookByIsbn(isbn);
+    const enrichment = await this.isbnGateway.findByIsbn(isbn);
+    const merged = {
+      title: dto.title ?? enrichment?.title,
+      authors: dto.authors?.length ? dto.authors : enrichment?.authors,
+      isbn,
+    };
+
+    const parsed = parseNewBook(merged);
+
+    const existing = await this.repository.findBookByIsbn(parsed.isbn);
     if (existing) {
-      throw new DuplicateIsbnError(isbn);
+      throw new DuplicateIsbnError(parsed.isbn);
     }
 
-    const book: BookDto = { bookId: this.newId(), title, authors, isbn };
+    const book: BookDto = {
+      bookId: this.newId(),
+      title: parsed.title,
+      authors: parsed.authors,
+      isbn: parsed.isbn,
+    };
     await this.repository.saveBook(book);
     return book;
   }
