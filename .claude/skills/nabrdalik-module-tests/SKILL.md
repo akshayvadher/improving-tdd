@@ -96,6 +96,7 @@ Run through this every time. If any item is "no", fix the design before writing 
 - [ ] **No I/O** in unit tests — no DB, no HTTP client, no filesystem.
 - [ ] Assert on **observable outcome** — returned DTOs, emitted events, or state visible through the facade. Never on private fields or internal maps.
 - [ ] For multi-write atomicity, route writes through the module's `TransactionalContext` so a unit test can prove rollback by forcing the last step to throw.
+- [ ] If the facade calls an **outbound gateway** (external service, third-party API), inject an in-memory gateway via the `create<Name>Facade({ gateway })` override — never a mocking library. For fault injection, write a spec-local `ThrowingOnce<Gateway>` wrapper (see `apps/library/src/catalog/catalog.facade.spec.ts` — `ThrowingOnceIsbnLookupGateway`).
 
 ## Cross-module boundary — real facade via factory vs hand-rolled fake
 
@@ -161,6 +162,7 @@ Read these in order — each one adds one teaching point:
 4. **Use the sample-data builder** with overrides inside tests. Default values carry the "boring" fields; overrides carry the fields that matter for this test.
 5. **For cross-module dependencies**, apply the two-tool rule: **Default: use the other module's real facade via its `createXFacade()` factory. Zero I/O, less code.** **Escape hatch: hand-roll a fake facade when the real factory-wired implementation cannot produce the behavior you need to observe — most commonly, a specific failure at a specific moment.** Justified hand-roll cases: inducing specific failure timing, forcing mid-operation exceptions, simulating a collaborator not yet built. NOT justified: convenience, avoiding repository setup, dodging sample-data builders, mocking call counts. Canonical example of the justified case: `apps/library/src/fines/fines.facade.spec.ts` (Slice 5) — the `ThrowingOnceMembershipFacade` forces `Membership.suspend` to throw mid-batch. Never use auto-mocks (`vi.mock`) for sibling facades.
 6. **For atomicity across multiple writes**, thread a `TransactionalContext` through your repository calls. The in-memory implementation stages writes and commits on success, discards on throw. Write one test that stubs the last step to throw and asserts nothing persisted.
+7. **For outbound gateways** (external APIs the module calls), put the port and its in-memory default under `src/shared/<gateway-name>/` — following the `shared/events/` precedent (port + in-memory default, no barrel, no Nest sub-module). Register the in-memory gateway as the production default in `<module>.module.ts` via a file-scoped `Symbol` provider, and add `<gateway>?` to the `create<Module>Facade` override interface so tests can swap it for a spec-local `ThrowingOnce<Gateway>` wrapper. Canonical example: `apps/library/src/shared/isbn-gateway/` + `ThrowingOnceIsbnLookupGateway` in `catalog.facade.spec.ts`.
 
 ## Reference templates
 

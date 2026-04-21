@@ -320,6 +320,18 @@ The way we keep that unit-of-work testable without a database is a `Transactiona
 
 This is scoped to **one module's own data**. The cross-module call `catalog.markCopyAvailable(...)` lives *outside* `tx.run(...)` — cross-module consistency is via happens-before ordering and events, never a shared transaction (see principle 7). That separation also avoids concurrent-connection deadlocks against the same pool; the tx reserves one connection for Lending's writes, and Catalog's write runs independently.
 
+### In-memory doubles for outbound gateways
+
+The "in-memory, not mocks" rule applies just as much to **outbound collaborators** — external APIs the module calls — as it does to the module's own repositories. An inbound port (a repository) and an outbound port (a gateway) are symmetric: both are interfaces, both get a real in-memory default, and neither gets mocked.
+
+The canonical example is `IsbnLookupGateway` in `apps/library/src/shared/isbn-gateway/`. `CatalogFacade.addBook` calls it to enrich missing `title` / `authors` from an ISBN. The port (`isbn-lookup-gateway.ts`) is a one-method interface; `InMemoryIsbnLookupGateway` (`in-memory-isbn-lookup-gateway.ts`) is a `Map`-backed default with a `seed(isbn, metadata)` helper for tests. The Nest wiring registers the in-memory gateway as the production default — there is no real HTTP adapter yet, and when one arrives the port does not change.
+
+Fault injection for an outbound gateway uses the same wrapper pattern as for own repositories. `ThrowingOnceIsbnLookupGateway` (spec-local inside `apps/library/src/catalog/catalog.facade.spec.ts` — not exported from any barrel) decorates the in-memory default, exposes `armFailureOnNextLookup(error)`, throws once on the next `findByIsbn`, then clears its slot. It mirrors `ThrowingOnceReservationRepository` (`apps/library/src/lending/lending.facade.spec.ts`) line-for-line; the only difference is that one fails an own-data write and the other fails an outbound read.
+
+This is **different from Principle 7's hand-rolled fake of another module's facade**. A module facade is someone else's bounded context, already built and already tested — the hand-rolled fake is the narrow escape hatch when that facade's real factory cannot produce the moment you need to observe. A gateway is infrastructure: a thin port to an external API, owned by no module, always collaborated with through its in-memory default.
+
+Why this beats mocks: deterministic fault injection (the error is exactly the instance you armed), the real interface contract is exercised (the wrapper `implements IsbnLookupGateway`, so the compiler breaks if the port drifts), and there is no test double that silently diverges from reality — the "real" shape of the gateway IS the in-memory one.
+
 ---
 
 ## Principle 6 — Don't let I/O escape the module
@@ -337,14 +349,18 @@ The factory function:
 export interface CatalogOverrides {
   repository?: CatalogRepository;
   newId?: () => string;
+  isbnLookupGateway?: IsbnLookupGateway;
 }
 
 export function createCatalogFacade(overrides: CatalogOverrides = {}): CatalogFacade {
   const repository = overrides.repository ?? new InMemoryCatalogRepository();
-  const newId = overrides.newId;
-  return newId ? new CatalogFacade(repository, newId) : new CatalogFacade(repository);
+  const newId = overrides.newId ?? randomUUID;
+  const isbnLookupGateway = overrides.isbnLookupGateway ?? new InMemoryIsbnLookupGateway();
+  return new CatalogFacade(repository, newId, isbnLookupGateway);
 }
 ```
+
+The override shape grows by one slot whenever a new collaborator arrives — `repository` for own data, `newId` for determinism, `isbnLookupGateway` for the outbound ISBN port added in the ISBN-enrichment slice. Each override keeps the same rule: callers override only what they need; everything else gets the in-memory default.
 
 The test takes no repository argument; it could not reach for one even if it wanted to:
 

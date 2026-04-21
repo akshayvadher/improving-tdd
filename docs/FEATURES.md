@@ -23,6 +23,7 @@ A book is a *title*: ISBN, title, authors. A copy is a *physical artefact* on a 
 
 - **Add a new book to the catalog** by ISBN, title, and authors.
   Title must be non-empty, at least one author is required, and the ISBN must be well-formed (ISBN-10 or ISBN-13, with or without hyphens). Surrounding whitespace on title, authors, and ISBN is trimmed. A second book with the same ISBN is rejected.
+  At add time, the Catalog enriches missing `title` / `authors` via an external **ISBN lookup gateway** — any field you omit is filled from the gateway's metadata before the book is persisted. Values you supply always win; the gateway fills gaps only. The shipped default is an in-memory gateway that stands in for the real provider in every test and in development; a future HTTP-backed adapter will swap in behind the same `IsbnLookupGateway` port (a narrow interface — not a network port) without touching any caller.
 - **Look up a book by ISBN** to confirm it is registered.
 - **List every book** in the order they were added.
 - **Register a new physical copy** of a book with a condition (`NEW`, `GOOD`, `FAIR`, or `POOR`).
