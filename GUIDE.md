@@ -704,6 +704,82 @@ Four nudges:
 
 ---
 
+## Principle 12 — Repository queries across tables — how do we test in memory?
+
+A query that spans two tables is still a query — and the in-memory answer has to agree with the SQL answer on the same data. Two shapes cover every case the demo runs into. The module boundary is what decides which one applies.
+
+### Within-module JOIN
+
+Lending owns `loans` and `reservations`. Counting the pending reservation queue for each active loan is a single JOIN over two tables Lending owns. The Drizzle implementation reads exactly as the SQL does — `LEFT JOIN` on `bookId` with the pending predicate in the `ON` clause, `GROUP BY loans.loanId`, `count(reservations.reservationId)` to count only the non-null matches (see `apps/library/src/lending/drizzle-loan.repository.ts:45-56`):
+
+```ts
+const rows = await this.db
+  .select({ loan: loans, queuedCount: count(reservations.reservationId) })
+  .from(loans)
+  .leftJoin(
+    reservations,
+    and(eq(reservations.bookId, loans.bookId), isNull(reservations.fulfilledAt)),
+  )
+  .where(isNull(loans.returnedAt))
+  .groupBy(loans.loanId);
+```
+
+The in-memory pair expresses the same collaboration, just narrower. A tiny file-private port — `ReservationView` with a single `pendingReservationCountForBook(bookId)` method — lets `InMemoryLoanRepository` ask the reservation side for what it needs without importing its repo type (`apps/library/src/lending/in-memory-loan.repository.ts:7-54`):
+
+```ts
+interface ReservationView {
+  pendingReservationCountForBook(bookId: BookId): Promise<number>;
+}
+
+async listActiveLoansWithQueuedReservations(): Promise<ActiveLoanWithQueuedCount[]> {
+  const active = this.listLoansSync().filter((loan) => loan.returnedAt == null);
+  return Promise.all(
+    active.map(async (loan) => ({
+      loan,
+      queuedCount: await this.reservationView.pendingReservationCountForBook(loan.bookId),
+    })),
+  );
+}
+```
+
+`lending.configuration.ts` adapts the in-memory reservation repo into that view and threads it in. The default is a no-op returning `0`, so overrides that pass only a loan repo still work. This is Principle 5 applied at the seam between two repositories: the in-memory double runs real logic against real state — just in-process — and the same facade acceptance tests pin down both backends.
+
+### Across module boundaries — no JOIN
+
+Overdue loans with titles and authors spans two modules — Lending owns loans, Catalog owns books. A JOIN is not on the table. The rule is explicit: **no cross-module JOINs.** A repository query MUST NOT JOIN tables owned by a different module; cross-module reads go through the other module's facade, with a batch method when N+1 would bite.
+
+Catalog exposes a batch read — one line in the facade that guards the empty case and delegates (`apps/library/src/catalog/catalog.facade.ts:71-74`):
+
+```ts
+async getBooks(bookIds: BookId[]): Promise<BookDto[]> {
+  if (bookIds.length === 0) return [];
+  return this.repository.listBooksByIds(bookIds);
+}
+```
+
+Lending composes. It calls its own overdue query, deduplicates the `bookId`s inline (mirroring `distinctMemberIds` in `fines.facade.ts:159-161`), asks Catalog once for all of them, builds a local `Map`, and merges (`apps/library/src/lending/lending.facade.ts:114-125`):
+
+```ts
+async listOverdueLoansWithTitles(now: Date): Promise<OverdueLoanReport[]> {
+  const overdue = await this.listOverdueLoans(now);
+  if (overdue.length === 0) return [];
+  const bookIds = Array.from(new Set(overdue.map((loan) => loan.bookId)));
+  const books = await this.catalog.getBooks(bookIds);
+  const byId = new Map(books.map((book) => [book.bookId, book]));
+  return overdue.map((loan) => {
+    const book = byId.get(loan.bookId);
+    if (!book) throw new BookNotFoundError(loan.bookId);
+    return { loan, title: book.title, authors: book.authors };
+  });
+}
+```
+
+Two tables, two modules, zero SQL JOIN. This is Principle 7 with the JOIN-specific rule attached: the facade is the seam, cross-module consistency is composition, never a shared schema. Each side stays testable with its own in-memory fake — Catalog's `Map<BookId, BookDto>` answers `getBooks` the same way Postgres does, and Lending's test wires a real `CatalogFacade` via `buildScene()` rather than a JOIN-aware fake.
+
+A JOIN is fine inside a module; across modules, compose through the facade.
+
+---
+
 ## Ports & gaps — where the TypeScript port diverges from Groovy/Spring
 
 The talk is Java and Spock. Some of Jakub's examples rely on language features that do not exist in TypeScript; the port uses the closest honest equivalent and calls out the gap.
