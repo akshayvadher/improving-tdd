@@ -8,6 +8,7 @@ import {
   CopyUnavailableError,
   LoanNotFoundError,
   MemberIneligibleError,
+  type ActiveLoanWithQueuedCount,
   type LoanDto,
   type LoanId,
   type LoanOpened,
@@ -105,6 +106,10 @@ export class LendingFacade {
 
   listLoansFor(memberId: MemberId): Promise<LoanDto[]> {
     return this.loans.listLoansForMember(memberId);
+  }
+
+  listActiveLoansWithQueuedReservations(): Promise<ActiveLoanWithQueuedCount[]> {
+    return this.loans.listActiveLoansWithQueuedReservations();
   }
 
   private async requireEligible(memberId: MemberId): Promise<void> {

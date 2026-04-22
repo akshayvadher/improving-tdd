@@ -4,6 +4,7 @@ export {
   CopyUnavailableError,
   LoanNotFoundError,
   MemberIneligibleError,
+  type ActiveLoanWithQueuedCount,
   type LendingEvent,
   type LoanDto,
   type LoanId,

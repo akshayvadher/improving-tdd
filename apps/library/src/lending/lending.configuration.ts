@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type { CatalogFacade } from '../catalog/index.js';
+import type { BookId, CatalogFacade } from '../catalog/index.js';
 import type { MembershipFacade } from '../membership/index.js';
 import type { EventBus } from '../shared/events/event-bus.js';
 import { InMemoryEventBus } from '../shared/events/in-memory-event-bus.js';
@@ -24,9 +24,13 @@ export interface LendingOverrides {
 }
 
 export function createLendingFacade(overrides: LendingOverrides): LendingFacade {
-  const loanRepository = overrides.loanRepository ?? new InMemoryLoanRepository();
   const reservationRepository =
     overrides.reservationRepository ?? new InMemoryReservationRepository();
+  const reservationView = {
+    pendingReservationCountForBook: async (bookId: BookId) =>
+      (await reservationRepository.listPendingReservationsForBook(bookId)).length,
+  };
+  const loanRepository = overrides.loanRepository ?? new InMemoryLoanRepository(reservationView);
   const eventBus = overrides.eventBus ?? new InMemoryEventBus();
   const txFactory = overrides.txFactory ?? (() => new InMemoryTransactionalContext(eventBus));
   const newId = overrides.newId ?? randomUUID;

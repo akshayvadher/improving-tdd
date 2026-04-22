@@ -3,7 +3,7 @@ import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common
 import type { BookId, CopyId } from '../catalog/index.js';
 import type { MemberId } from '../membership/index.js';
 import { LendingFacade } from './lending.facade.js';
-import type { LoanDto, LoanId, ReservationDto } from './lending.types.js';
+import type { ActiveLoanWithQueuedCount, LoanDto, LoanId, ReservationDto } from './lending.types.js';
 
 interface BorrowBody {
   memberId: MemberId;
@@ -38,6 +38,11 @@ export class LendingController {
   listOverdueLoans(@Query('now') now?: string): Promise<LoanDto[]> {
     const at = now ? new Date(now) : new Date();
     return this.facade.listOverdueLoans(at);
+  }
+
+  @Get('loans/active-with-reservation-counts')
+  listActiveLoansWithQueuedReservations(): Promise<ActiveLoanWithQueuedCount[]> {
+    return this.facade.listActiveLoansWithQueuedReservations();
   }
 
   @Get('members/:memberId/loans')

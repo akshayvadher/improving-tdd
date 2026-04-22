@@ -23,6 +23,11 @@ export interface ReservationDto {
   fulfilledAt?: Date;
 }
 
+export interface ActiveLoanWithQueuedCount {
+  loan: LoanDto;
+  queuedCount: number;
+}
+
 export interface LoanOpened extends DomainEvent {
   type: 'LoanOpened';
   loanId: LoanId;

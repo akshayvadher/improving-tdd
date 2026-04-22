@@ -1,10 +1,10 @@
-import { eq } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 
 import type { BookId } from '../catalog/index.js';
 import type { AppDatabase } from '../db/client.js';
-import { loans } from '../db/schema/index.js';
+import { loans, reservations } from '../db/schema/index.js';
 import type { MemberId } from '../membership/index.js';
-import type { LoanDto, LoanId } from './lending.types.js';
+import type { ActiveLoanWithQueuedCount, LoanDto, LoanId } from './lending.types.js';
 import type { LoanRepository } from './loan.repository.js';
 import type { TransactionalContext } from './transactional-context.js';
 import { DrizzleTransactionalContext } from './drizzle-transactional-context.js';
@@ -40,6 +40,19 @@ export class DrizzleLoanRepository implements LoanRepository {
   async listLoans(): Promise<LoanDto[]> {
     const rows = await this.db.select().from(loans);
     return rows.map(toDto);
+  }
+
+  async listActiveLoansWithQueuedReservations(): Promise<ActiveLoanWithQueuedCount[]> {
+    const rows = await this.db
+      .select({ loan: loans, queuedCount: count(reservations.reservationId) })
+      .from(loans)
+      .leftJoin(
+        reservations,
+        and(eq(reservations.bookId, loans.bookId), isNull(reservations.fulfilledAt)),
+      )
+      .where(isNull(loans.returnedAt))
+      .groupBy(loans.loanId);
+    return rows.map(({ loan, queuedCount }) => ({ loan: toDto(loan), queuedCount }));
   }
 }
 

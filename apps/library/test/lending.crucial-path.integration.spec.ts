@@ -7,7 +7,9 @@ import { createTestApp } from './support/app-factory.js';
 import { postNewBook, registerCopy } from './support/interactions/catalog-interactions.js';
 import {
   borrowCopy,
+  listActiveLoansWithQueuedReservations,
   listLoansFor,
+  reserveBook,
   returnLoan,
 } from './support/interactions/lending-interactions.js';
 import { postNewMember } from './support/interactions/membership-interactions.js';
@@ -84,5 +86,85 @@ suite('Lending crucial path (HTTP + Postgres)', () => {
     // and the listing now reports the loan as returned
     const closedList = await listLoansFor(app, member.memberId);
     expect(closedList.body[0].returnedAt).toBeTruthy();
+  });
+
+  it('serves /loans/active-with-reservation-counts with the LEFT JOIN + GROUP BY shape (AC-1.10, AC-1.11)', async () => {
+    // given two books, each with one copy, and two members
+    const bookOneResponse = await postNewBook(app, sampleNewBook({ isbn: '978-0132350884' }));
+    const bookOne = bookOneResponse.body;
+    const copyOneResponse = await registerCopy(
+      app,
+      bookOne.bookId,
+      sampleNewCopy({ bookId: bookOne.bookId }),
+    );
+    const copyOne = copyOneResponse.body;
+
+    const bookTwoResponse = await postNewBook(app, sampleNewBook({ isbn: '978-0134685991' }));
+    const bookTwo = bookTwoResponse.body;
+    const copyTwoResponse = await registerCopy(
+      app,
+      bookTwo.bookId,
+      sampleNewCopy({ bookId: bookTwo.bookId }),
+    );
+    const copyTwo = copyTwoResponse.body;
+
+    const borrowerResponse = await postNewMember(
+      app,
+      sampleNewMember({ email: 'alan.kay@example.com' }),
+    );
+    const borrower = borrowerResponse.body;
+    const reserverResponse = await postNewMember(
+      app,
+      sampleNewMember({ email: 'grace.hopper@example.com' }),
+    );
+    const reserver = reserverResponse.body;
+
+    // and the borrower has an active loan on each book
+    const loanOneResponse = await borrowCopy(app, borrower.memberId, copyOne.copyId);
+    const loanOne = loanOneResponse.body;
+    const loanTwoResponse = await borrowCopy(app, borrower.memberId, copyTwo.copyId);
+    const loanTwo = loanTwoResponse.body;
+
+    // and one pending reservation on book one (none on book two)
+    await reserveBook(app, reserver.memberId, bookOne.bookId);
+
+    // when the endpoint is called
+    const response = await listActiveLoansWithQueuedReservations(app);
+
+    // then 200 + the shape matches ActiveLoanWithQueuedCount[] with per-book counts
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body)).toBe(true);
+    expect(response.body).toHaveLength(2);
+
+    const byLoanId = new Map<string, { loan: { loanId: string }; queuedCount: number }>(
+      response.body.map((row: { loan: { loanId: string }; queuedCount: number }) => [
+        row.loan.loanId,
+        row,
+      ]),
+    );
+
+    expect(byLoanId.get(loanOne.loanId)).toEqual(
+      expect.objectContaining({
+        loan: expect.objectContaining({
+          loanId: loanOne.loanId,
+          memberId: borrower.memberId,
+          copyId: copyOne.copyId,
+          bookId: bookOne.bookId,
+        }),
+        queuedCount: 1,
+      }),
+    );
+
+    expect(byLoanId.get(loanTwo.loanId)).toEqual(
+      expect.objectContaining({
+        loan: expect.objectContaining({
+          loanId: loanTwo.loanId,
+          memberId: borrower.memberId,
+          copyId: copyTwo.copyId,
+          bookId: bookTwo.bookId,
+        }),
+        queuedCount: 0,
+      }),
+    );
   });
 });

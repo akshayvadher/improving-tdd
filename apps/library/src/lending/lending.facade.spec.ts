@@ -292,6 +292,219 @@ describe('LendingFacade', () => {
     });
   });
 
+  describe('listActiveLoansWithQueuedReservations', () => {
+    // AC-1.9 is satisfied by this whole describe block: facade-only exercise,
+    // reuses the existing buildScene() harness, no new fakes / mocks.
+    it('returns an empty array when no loans exist (AC-1.1)', async () => {
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([]);
+    });
+
+    it('reports queuedCount=0 for an active loan whose book has no reservations (AC-1.2)', async () => {
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan, queuedCount: 0 }]);
+    });
+
+    it('reports queuedCount=1 when one pending reservation exists on the same book (AC-1.3)', async () => {
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      await scene.facade.reserve(bob.memberId, copy.bookId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan, queuedCount: 1 }]);
+    });
+
+    it('reports queuedCount=3 when three pending reservations exist on the same book (AC-1.4)', async () => {
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+      const dave = await scene.seedMember('Dave');
+      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      await scene.facade.reserve(bob.memberId, copy.bookId);
+      await scene.facade.reserve(carol.memberId, copy.bookId);
+      await scene.facade.reserve(dave.memberId, copy.bookId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan, queuedCount: 3 }]);
+    });
+
+    it('does not count fulfilled reservations toward queuedCount (AC-1.5)', async () => {
+      // Setup: two reservations get fulfilled by borrowing+returning a copy
+      // (returnLoan fulfils the oldest pending reservation for that book).
+      // Then a third reservation is left pending, and a fresh active loan is
+      // opened on the same book. Expected queuedCount === 1.
+      const isbn = '978-9999999001';
+      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
+      const copyA = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const copyB = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const copyC = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+      const dave = await scene.seedMember('Dave');
+
+      // Two reservations that will be fulfilled.
+      await scene.facade.reserve(bob.memberId, book.bookId);
+      await scene.facade.reserve(carol.memberId, book.bookId);
+
+      // First borrow-return cycle fulfils bob's reservation.
+      const loanA = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      await scene.facade.returnLoan(loanA.loanId);
+
+      // Second borrow-return cycle fulfils carol's reservation.
+      const loanB = await scene.facade.borrow(alice.memberId, copyB.copyId);
+      await scene.facade.returnLoan(loanB.loanId);
+
+      // A third reservation stays pending, and a fresh active loan is opened.
+      await scene.facade.reserve(dave.memberId, book.bookId);
+      const activeLoan = await scene.facade.borrow(alice.memberId, copyC.copyId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan: activeLoan, queuedCount: 1 }]);
+    });
+
+    it('reports queuedCount=0 when all reservations on the loan\'s book have been fulfilled', async () => {
+      const isbn = '978-9999999004';
+      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
+      const copyA = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const copyB = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+      const dave = await scene.seedMember('Dave');
+
+      // Two reservations that will both be fulfilled.
+      await scene.facade.reserve(bob.memberId, book.bookId);
+      await scene.facade.reserve(carol.memberId, book.bookId);
+
+      // First borrow-return cycle fulfils bob's reservation.
+      const loanA1 = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      await scene.facade.returnLoan(loanA1.loanId);
+
+      // Second borrow-return cycle fulfils carol's reservation. The book now
+      // has zero pending reservations and two fulfilled ones.
+      const loanA2 = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      await scene.facade.returnLoan(loanA2.loanId);
+
+      // A fresh active loan is opened on the same book — no pending
+      // reservations remain.
+      const activeLoan = await scene.facade.borrow(dave.memberId, copyB.copyId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan: activeLoan, queuedCount: 0 }]);
+    });
+
+    it('excludes returned loans even when pending reservations exist on the book (AC-1.6)', async () => {
+      const isbn = '978-9999999002';
+      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
+      const copyA = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const copyB = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+
+      // Loan that will be returned.
+      const returnedLoan = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      // Loan that stays active.
+      const activeLoan = await scene.facade.borrow(bob.memberId, copyB.copyId);
+      // Reserve AFTER the returned loan is already borrowed, so the return
+      // leaves it pending (return fulfils the oldest pending reservation,
+      // which here is carol's — but there are two reservations queued before
+      // return? No: we reserve once, and returning fulfils it. Instead, we
+      // return first, THEN reserve, so the reservation stays pending).
+      await scene.facade.returnLoan(returnedLoan.loanId);
+      await scene.facade.reserve(carol.memberId, book.bookId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      expect(result).toEqual([{ loan: activeLoan, queuedCount: 1 }]);
+    });
+
+    it('reports the per-book count for each active loan across different books (AC-1.7)', async () => {
+      const copyOne = await scene.seedAvailableCopy();
+      const copyTwo = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+      const dave = await scene.seedMember('Dave');
+
+      const loanOne = await scene.facade.borrow(alice.memberId, copyOne.copyId);
+      const loanTwo = await scene.facade.borrow(bob.memberId, copyTwo.copyId);
+
+      // Two pending reservations on book one, zero on book two.
+      await scene.facade.reserve(carol.memberId, copyOne.bookId);
+      await scene.facade.reserve(dave.memberId, copyOne.bookId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      const byLoanId = new Map(result.map((row) => [row.loan.loanId, row]));
+      expect(byLoanId.get(loanOne.loanId)).toEqual({ loan: loanOne, queuedCount: 2 });
+      expect(byLoanId.get(loanTwo.loanId)).toEqual({ loan: loanTwo, queuedCount: 0 });
+      expect(result).toHaveLength(2);
+    });
+
+    it('returns both active loans on the same book with the same per-book count (AC-1.8)', async () => {
+      const isbn = '978-9999999003';
+      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
+      const copyA = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const copyB = await scene.catalog.registerCopy(
+        book.bookId,
+        sampleNewCopy({ bookId: book.bookId }),
+      );
+      const alice = await scene.seedMember('Alice');
+      const bob = await scene.seedMember('Bob');
+      const carol = await scene.seedMember('Carol');
+
+      const loanA = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      const loanB = await scene.facade.borrow(bob.memberId, copyB.copyId);
+      await scene.facade.reserve(carol.memberId, book.bookId);
+
+      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+
+      const byLoanId = new Map(result.map((row) => [row.loan.loanId, row]));
+      expect(result).toHaveLength(2);
+      expect(byLoanId.get(loanA.loanId)).toEqual({ loan: loanA, queuedCount: 1 });
+      expect(byLoanId.get(loanB.loanId)).toEqual({ loan: loanB, queuedCount: 1 });
+    });
+  });
+
   describe('atomicity', () => {
     // principle 5 extension: atomicity across functions
     // The transactional context stages the loan save + the fulfillment-reservation
@@ -341,7 +554,6 @@ describe('LendingFacade', () => {
     });
   });
 });
-
 // Real InMemoryReservationRepository that throws on the next saveReservation
 // after being armed. This one we DO hand-roll, because it is Lending's OWN
 // repository (principle 5: in-memory doubles for your module's data, with
