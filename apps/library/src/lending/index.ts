@@ -10,6 +10,7 @@ export {
   type LoanId,
   type LoanOpened,
   type LoanReturned,
+  type OverdueLoanReport,
   type ReservationDto,
   type ReservationFulfilled,
   type ReservationId,

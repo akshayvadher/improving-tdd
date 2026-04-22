@@ -25,6 +25,11 @@ export function listOverdueLoans(app: INestApplication, now?: Date): HttpCall {
   return now ? req.query({ now: now.toISOString() }) : req;
 }
 
+export function listOverdueLoansWithTitles(app: INestApplication, now?: Date): HttpCall {
+  const req = server(app).get('/loans/overdue/with-titles');
+  return now ? req.query({ now: now.toISOString() }) : req;
+}
+
 export function listActiveLoansWithQueuedReservations(app: INestApplication): HttpCall {
   return server(app).get('/loans/active-with-reservation-counts');
 }

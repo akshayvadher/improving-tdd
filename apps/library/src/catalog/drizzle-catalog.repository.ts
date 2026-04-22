@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 import type { AppDatabase } from '../db/client.js';
 import { books, copies } from '../db/schema/index.js';
@@ -38,6 +38,12 @@ export class DrizzleCatalogRepository implements CatalogRepository {
 
   async listBooks(): Promise<BookDto[]> {
     const rows = await this.db.select().from(books);
+    return rows.map(toBookDto);
+  }
+
+  async listBooksByIds(bookIds: BookId[]): Promise<BookDto[]> {
+    if (bookIds.length === 0) return [];
+    const rows = await this.db.select().from(books).where(inArray(books.bookId, bookIds));
     return rows.map(toBookDto);
   }
 

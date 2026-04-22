@@ -68,6 +68,11 @@ export class CatalogFacade {
     return this.repository.listBooks();
   }
 
+  async getBooks(bookIds: BookId[]): Promise<BookDto[]> {
+    if (bookIds.length === 0) return [];
+    return this.repository.listBooksByIds(bookIds);
+  }
+
   async registerCopy(bookId: BookId, dto: NewCopyDto): Promise<CopyDto> {
     const { condition } = parseNewCopy(dto);
 

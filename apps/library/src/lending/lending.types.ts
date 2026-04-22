@@ -28,6 +28,12 @@ export interface ActiveLoanWithQueuedCount {
   queuedCount: number;
 }
 
+export interface OverdueLoanReport {
+  loan: LoanDto;
+  title: string;
+  authors: string[];
+}
+
 export interface LoanOpened extends DomainEvent {
   type: 'LoanOpened';
   loanId: LoanId;

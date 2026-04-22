@@ -5,6 +5,7 @@ export interface CatalogRepository {
   findBookById(bookId: BookId): Promise<BookDto | undefined>;
   findBookByIsbn(isbn: Isbn): Promise<BookDto | undefined>;
   listBooks(): Promise<BookDto[]>;
+  listBooksByIds(bookIds: BookId[]): Promise<BookDto[]>;
 
   saveCopy(copy: CopyDto): Promise<void>;
   findCopyById(copyId: CopyId): Promise<CopyDto | undefined>;

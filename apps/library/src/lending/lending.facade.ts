@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
-import { CatalogFacade, CopyStatus, type BookId, type CopyId } from '../catalog/index.js';
+import {
+  BookNotFoundError,
+  CatalogFacade,
+  CopyStatus,
+  type BookId,
+  type CopyId,
+} from '../catalog/index.js';
 import { MembershipFacade, type MemberId } from '../membership/index.js';
 import type { EventBus } from '../shared/events/event-bus.js';
 import {
@@ -13,6 +19,7 @@ import {
   type LoanId,
   type LoanOpened,
   type LoanReturned,
+  type OverdueLoanReport,
   type ReservationDto,
   type ReservationFulfilled,
   type ReservationQueued,
@@ -102,6 +109,19 @@ export class LendingFacade {
   async listOverdueLoans(now: Date): Promise<LoanDto[]> {
     const all = await this.loans.listLoans();
     return all.filter((loan) => loan.returnedAt == null && loan.dueDate.getTime() < now.getTime());
+  }
+
+  async listOverdueLoansWithTitles(now: Date): Promise<OverdueLoanReport[]> {
+    const overdue = await this.listOverdueLoans(now);
+    if (overdue.length === 0) return [];
+    const bookIds = Array.from(new Set(overdue.map((loan) => loan.bookId)));
+    const books = await this.catalog.getBooks(bookIds);
+    const byId = new Map(books.map((book) => [book.bookId, book]));
+    return overdue.map((loan) => {
+      const book = byId.get(loan.bookId);
+      if (!book) throw new BookNotFoundError(loan.bookId);
+      return { loan, title: book.title, authors: book.authors };
+    });
   }
 
   listLoansFor(memberId: MemberId): Promise<LoanDto[]> {

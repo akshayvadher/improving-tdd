@@ -26,6 +26,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     return Array.from(this.booksById.values());
   }
 
+  async listBooksByIds(bookIds: BookId[]): Promise<BookDto[]> {
+    return Array.from(this.booksById.values()).filter((book) => bookIds.includes(book.bookId));
+  }
+
   async saveCopy(copy: CopyDto): Promise<void> {
     this.copiesById.set(copy.copyId, copy);
   }

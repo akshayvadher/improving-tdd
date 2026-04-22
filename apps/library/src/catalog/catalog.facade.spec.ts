@@ -228,6 +228,74 @@ describe('CatalogFacade', () => {
   });
 });
 
+describe('getBooks', () => {
+  it('returns [] for an empty bookIds array without throwing (AC-2.6)', async () => {
+    // given a catalog with a couple of books in it — the guard must short-circuit
+    // BEFORE the repository is consulted, so seeding proves the short-circuit
+    // is not just "nothing to return"
+    const catalog = buildFacade();
+    await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await catalog.addBook(sampleNewBookWithIsbn('978-0135957059'));
+
+    // when getBooks is called with an empty array
+    // then it resolves to [] without throwing
+    await expect(catalog.getBooks([])).resolves.toEqual([]);
+  });
+
+  it('returns each BookDto whose id matches, in any order (AC-2.7 happy path)', async () => {
+    // given two books in the catalog
+    const catalog = buildFacade();
+    const bookA = await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bookB = await catalog.addBook(sampleNewBookWithIsbn('978-0135957059'));
+
+    // when getBooks is called with both bookIds
+    const books = await catalog.getBooks([bookA.bookId, bookB.bookId]);
+
+    // then both books are returned (order is not specified by the contract)
+    expect(books).toHaveLength(2);
+    expect(books).toEqual(expect.arrayContaining([bookA, bookB]));
+  });
+
+  it('silently drops ids that do not match any book (AC-2.7 missing id)', async () => {
+    // given a catalog with one book
+    const catalog = buildFacade();
+    const bookA = await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when getBooks is called with a mix of a real id and a non-existent id
+    const books = await catalog.getBooks([bookA.bookId, 'non-existent-id']);
+
+    // then only the matching book is returned — the missing id is silently dropped
+    expect(books).toEqual([bookA]);
+  });
+
+  it('returns one row per matching book when the caller passes duplicate ids', async () => {
+    // given a catalog with two books
+    const catalog = buildFacade();
+    const bookA = await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bookB = await catalog.addBook(sampleNewBookWithIsbn('978-0135957059'));
+
+    // when getBooks is called with duplicates in the bookIds array
+    const books = await catalog.getBooks([bookA.bookId, bookA.bookId, bookB.bookId]);
+
+    // then each matching book appears once — dedup of the input is the caller's
+    // job; the repo/facade simply filters the stored books by the id set
+    expect(books).toHaveLength(2);
+    expect(books).toEqual(expect.arrayContaining([bookA, bookB]));
+  });
+
+  it('returns [] when none of the given bookIds match', async () => {
+    // given a catalog with one book
+    const catalog = buildFacade();
+    await catalog.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when getBooks is called with only unknown ids
+    const books = await catalog.getBooks(['ghost-1', 'ghost-2']);
+
+    // then the result is an empty array
+    expect(books).toEqual([]);
+  });
+});
+
 describe('addBook — ISBN enrichment', () => {
   function buildFacadeWithGateway(seed: Array<[string, BookMetadata]> = []) {
     const gateway = new InMemoryIsbnLookupGateway();
