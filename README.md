@@ -16,6 +16,19 @@ Three deliverables:
 2. A [`GUIDE.md`](./GUIDE.md) walking each principle with pointers into the demo
 3. A Claude skill at `.claude/skills/nabrdalik-module-tests/` so an LLM can generate tests in this style
 
+## Major learnings
+
+**The big idea:** tests that run in milliseconds, read like specs, and break only when behaviour changes.
+
+- **Don't mock your own code.** Write in-memory implementations of your own repositories and run the same contract against both them and the real Drizzle pair. `vi.fn` and `vi.mock` never appear in the suite.
+- **Enter through the facade.** Tests drive the module's public API, not its internals. Hand-rolled wrappers (`ThrowingOnceReservationRepository`, `RecordingCatalogFacade`) inject faults or record calls — they decorate real collaborators, they don't replace them.
+- **A module owns its tables.** In-module SQL JOINs are fine. Cross-module JOINs are banned — reach for the other module's facade with a batch method instead. See [GUIDE.md Principle 12](./GUIDE.md).
+- **Own-module transactions only.** Lending's `TransactionalContext` wraps its own writes; Catalog side-effects run after commit. Cross-module consistency is events and happens-before, never a shared transaction.
+- **Integration tests guard the crucial path.** One HTTP-through-Postgres test per module proves the contract; the rest is unit tests against in-memory doubles. 121 unit tests in ~2.5s, 15 integration tests in ~30s.
+- **Sample data builders beat literals.** `sampleNewBook({ isbn: '...' })` with overrides keeps tests free of noise and survives schema change without rewrites.
+
+**Why it matters:** fast feedback is what makes TDD worth doing. These rules are how you keep the suite fast *and* honest as the codebase grows.
+
 ## Requirements
 
 - Node.js 20+
