@@ -49,6 +49,14 @@ pnpm test:unit
 
 40 tests across all three modules. The whole suite finishes in under a second — no Docker, no database, no network.
 
+## Run PGlite tests
+
+```bash
+pnpm test:pglite
+```
+
+Runs the Categories module against a real Postgres via PGlite (WASM, no Docker). See [GUIDE.md Principle 5 — Substrate alternative: PGlite](./GUIDE.md) for the rationale.
+
 ## Run integration tests
 
 ```bash

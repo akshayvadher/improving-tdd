@@ -334,6 +334,28 @@ This is **different from Principle 7's hand-rolled fake of another module's faca
 
 Why this beats mocks: deterministic fault injection (the error is exactly the instance you armed), the real interface contract is exercised (the wrapper `implements IsbnLookupGateway`, so the compiler breaks if the port drifts), and there is no test double that silently diverges from reality — the "real" shape of the gateway IS the in-memory one.
 
+### Substrate alternative: PGlite
+
+The in-memory double is the first contract check on a repository. The Drizzle-over-Postgres pair under testcontainers is the second. **PGlite is a third** — not a replacement for either.
+
+PGlite is WASM Postgres — the real Postgres query engine compiled to WebAssembly, running in-process inside Node. No Docker, no container, no network. You `new PGlite()`, walk your real migrations, hand the instance to Drizzle, and the repository class that ships to production runs against it.
+
+Why it earns a slot the in-memory double cannot fill: it exercises the real SQL. A `Map`-backed `InMemoryCategoryRepository` cannot observe that `ILIKE 'a%'` is case-insensitive, that a `UNIQUE` constraint on `name` raises on duplicate insert, or that `ORDER BY name ASC` uses Postgres collation. PGlite makes all three real — at unit-test speed, on any machine.
+
+The canonical example is the Categories module:
+
+- Module under test: `apps/library/src/categories/`
+- PGlite spec: `apps/library/test/categories.pglite.spec.ts` — hits `new DrizzleCategoryRepository(db)` directly, no Nest bootstrap.
+- Harness: `apps/library/test/support/pglite.ts` — `startPglite()` walks `src/db/migrations/*.sql` in sorted order and returns `{ db, close }`.
+
+Run it: `pnpm test:pglite` from the repo root (alias for `pnpm --filter library test:pglite`).
+
+**Prefer PGlite when:** fast feedback without Docker, portable CI where a container runtime isn't reliably available, exercising vanilla-Postgres DDL/DML and contract details (`ILIKE`, `UNIQUE`, collation) at unit-test speed.
+
+**Testcontainers still wins when:** you need a specific Postgres version or extensions, you need a real network endpoint (connection pooling, multiple clients), you need replication or logical decoding, or you're exercising `postgres-js`-specific surface PGlite doesn't emulate. Every other module in this repo keeps its crucial-path testcontainers spec untouched — PGlite is additive, not subtractive.
+
+One honest caveat worth pinning: the contract holds across substrates (case-insensitive match, ASC sort, 100-row cap), but the *exact row order* for case-mixed strings is substrate-specific — that's collation, not a bug. Write assertions against the contract, not against ordering that only one backend produces.
+
 ---
 
 ## Principle 6 — Don't let I/O escape the module
