@@ -239,7 +239,9 @@ describe('LendingFacade', () => {
 
       // AND the reservation remains pending (fulfilledAt still undefined) —
       // the facade alone does not fulfil reservations; only the consumer does.
-      const storedReservation = await reservations.findReservationById(bobReservation.reservationId);
+      const storedReservation = await reservations.findReservationById(
+        bobReservation.reservationId,
+      );
       expect(storedReservation?.fulfilledAt).toBeUndefined();
 
       // AND the copy ends AVAILABLE because there is no consumer wired in
@@ -441,7 +443,7 @@ describe('LendingFacade', () => {
       expect(result).toEqual([{ loan: activeLoan, queuedCount: 1 }]);
     });
 
-    it('reports queuedCount=0 when all reservations on the loan\'s book have been fulfilled', async () => {
+    it("reports queuedCount=0 when all reservations on the loan's book have been fulfilled", async () => {
       const reservations = new InMemoryReservationRepository();
       const altScene = buildSceneWith({ reservationRepository: reservations });
       const isbn = '978-9999999004';
@@ -603,9 +605,7 @@ describe('LendingFacade', () => {
       const reports = await scene.facade.listOverdueLoansWithTitles(wayLater);
 
       // then a single enriched report is returned
-      expect(reports).toEqual([
-        { loan, title: 'Refactoring', authors: ['Martin Fowler'] },
-      ]);
+      expect(reports).toEqual([{ loan, title: 'Refactoring', authors: ['Martin Fowler'] }]);
     });
 
     it('returns three reports across three distinct books, each with its own title+authors (AC-2.3)', async () => {

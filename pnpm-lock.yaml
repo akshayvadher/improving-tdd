@@ -46,7 +46,7 @@ importers:
         version: 10.4.22(@nestjs/common@10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.22)
       drizzle-orm:
         specifier: ^0.30.9
-        version: 0.30.10(postgres@3.4.9)
+        version: 0.30.10(@electric-sql/pglite@0.4.4)(postgres@3.4.9)
       openai:
         specifier: ^6.34.0
         version: 6.34.0(zod@3.25.76)
@@ -63,6 +63,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@electric-sql/pglite':
+        specifier: ^0.4.4
+        version: 0.4.4
       '@nestjs/testing':
         specifier: ^10.3.7
         version: 10.4.22(@nestjs/common@10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.22(@nestjs/common@10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@10.4.22)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/platform-express@10.4.22(@nestjs/common@10.4.22(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@10.4.22))
@@ -148,6 +151,9 @@ packages:
 
   '@borewit/text-codec@0.2.2':
     resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
+
+  '@electric-sql/pglite@0.4.4':
+    resolution: {integrity: sha512-g/6CWAJ4XOkObWCWAQ2IReZD8VvsDy3poRHSKvpRR2F96F8WJ3HVbjpso3gN7l0q6QPPgvxSSpl/qo5k8a7mkQ==}
 
   '@esbuild-kit/core-utils@3.3.2':
     resolution: {integrity: sha512-sPRAnw9CdSsRmEtnsl2WXWdyquogVpB3yZ3dgwJfe8zrOzTsV7cJvmwrKVa+0ma5BoiGJ+BoqkMvawbayKUsqQ==}
@@ -2941,6 +2947,8 @@ snapshots:
 
   '@borewit/text-codec@0.2.2': {}
 
+  '@electric-sql/pglite@0.4.4': {}
+
   '@esbuild-kit/core-utils@3.3.2':
     dependencies:
       esbuild: 0.18.20
@@ -4115,8 +4123,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.30.10(postgres@3.4.9):
+  drizzle-orm@0.30.10(@electric-sql/pglite@0.4.4)(postgres@3.4.9):
     optionalDependencies:
+      '@electric-sql/pglite': 0.4.4
       postgres: 3.4.9
 
   dunder-proto@1.0.1:

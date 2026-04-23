@@ -11,6 +11,7 @@
   "scripts": {
     "test:unit": "pnpm --filter library test:unit",
     "test:integration": "pnpm --filter library test:integration",
+    "test:pglite": "pnpm --filter library test:pglite",
     "format": "biome format --write .",
     "format:check": "biome format ."
   },

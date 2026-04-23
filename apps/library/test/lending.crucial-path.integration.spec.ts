@@ -198,9 +198,8 @@ suite('Lending crucial path (HTTP + Postgres)', () => {
     const book = (await postNewBook(app, bookPayload)).body;
     const copy = (await registerCopy(app, book.bookId, sampleNewCopy({ bookId: book.bookId })))
       .body;
-    const member = (
-      await postNewMember(app, sampleNewMember({ email: 'ken.iverson@example.com' }))
-    ).body;
+    const member = (await postNewMember(app, sampleNewMember({ email: 'ken.iverson@example.com' })))
+      .body;
     const loan = (await borrowCopy(app, member.memberId, copy.copyId)).body;
     await forceLoanOverdue(db, loan.loanId, 5);
 

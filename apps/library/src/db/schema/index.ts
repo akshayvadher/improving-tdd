@@ -1,4 +1,5 @@
 export { books } from './books.js';
+export { categories } from './categories.js';
 export { copies } from './copies.js';
 export { fines } from './fines.js';
 export { loans } from './loans.js';

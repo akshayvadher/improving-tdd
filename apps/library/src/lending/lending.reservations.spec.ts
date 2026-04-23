@@ -139,7 +139,7 @@ describe('reservation queue DSL', () => {
     expect(await dsl.queueFor(book)).toEqual(['alice', 'bob', 'carol']);
   });
 
-  it('leaves the queue untouched on return — queue walking is the consumer\'s job', async () => {
+  it("leaves the queue untouched on return — queue walking is the consumer's job", async () => {
     // given alice has borrowed a copy and two other members are waiting in line
     const book = 'refactoring';
     const copy = scene.seedAvailableCopy(book);

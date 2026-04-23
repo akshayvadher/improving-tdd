@@ -12,6 +12,11 @@ import {
   InvalidBookError,
   InvalidCopyError,
 } from '../../catalog/index.js';
+import {
+  CategoryNotFoundError,
+  DuplicateCategoryError,
+  InvalidCategoryError,
+} from '../../categories/index.js';
 import { InvalidChatRequestError } from '../../chat/index.js';
 import { FineAlreadyPaidError, FineNotFoundError } from '../../fines/index.js';
 import {
@@ -37,6 +42,7 @@ const NOT_FOUND_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   MemberNotFoundError,
   LoanNotFoundError,
   FineNotFoundError,
+  CategoryNotFoundError,
 ];
 
 const CONFLICT_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
@@ -45,6 +51,7 @@ const CONFLICT_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   CopyUnavailableError,
   MemberIneligibleError,
   FineAlreadyPaidError,
+  DuplicateCategoryError,
 ];
 
 const INVALID_REQUEST_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
@@ -52,6 +59,7 @@ const INVALID_REQUEST_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   InvalidCopyError,
   InvalidMemberError,
   InvalidChatRequestError,
+  InvalidCategoryError,
 ];
 
 @Catch(Error)
