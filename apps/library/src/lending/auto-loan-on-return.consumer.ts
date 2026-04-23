@@ -14,9 +14,11 @@
 //
 // Reservation write path (architecture decision #1a): the consumer owns its
 // own TransactionalContextFactory. Both the claim and the un-fulfill run
-// inside fresh txs from this factory — the consumer is post-commit relative
-// to returnLoan, so wrapping its own writes in its own tx keeps the
-// reservation repository's saveReservation(ctx) signature unchanged.
+// inside fresh txs from this factory. Each tx bundles ONE reservation write
+// with ONE staged event (ReservationFulfilled or ReservationUnfulfilled) —
+// if the write rejects, the event never publishes. This is the tx actually
+// earning its keep: a subscriber that reacts to ReservationFulfilled by
+// notifying the reserver can trust that the reservation is committed.
 import type { BookId } from '../catalog/index.js';
 import type { MembershipFacade } from '../membership/index.js';
 import type { EventBus, Unsubscribe } from '../shared/events/event-bus.js';
@@ -27,6 +29,8 @@ import type {
   LoanDto,
   LoanReturned,
   ReservationDto,
+  ReservationFulfilled,
+  ReservationUnfulfilled,
 } from './lending.types.js';
 import type { ReservationRepository } from './reservation.repository.js';
 import type { TransactionalContextFactory } from './transactional-context.js';
@@ -75,10 +79,23 @@ export function createAutoLoanOnReturnConsumer(
   };
 
   const claimReservation = async (reservation: ReservationDto): Promise<ReservationDto> => {
-    const claimed: ReservationDto = { ...reservation, fulfilledAt: clock() };
+    const fulfilledAt = clock();
+    const claimed: ReservationDto = { ...reservation, fulfilledAt };
     const tx = deps.txFactory();
+    // Atomicity target: the reservation write + the ReservationFulfilled
+    // event. If saveReservation throws, tx.run rejects BEFORE stageEvent
+    // runs AND BEFORE the staged events publish — downstream subscribers
+    // never see a ReservationFulfilled for a claim that didn't land.
     await tx.run(async () => {
       deps.reservations.saveReservation(claimed, tx);
+      const event: ReservationFulfilled = {
+        type: 'ReservationFulfilled',
+        reservationId: claimed.reservationId,
+        memberId: claimed.memberId,
+        bookId: claimed.bookId,
+        fulfilledAt,
+      };
+      tx.stageEvent(event);
     });
     return claimed;
   };
@@ -88,13 +105,25 @@ export function createAutoLoanOnReturnConsumer(
     const unfulfilled: ReservationDto = rest;
     const tx = deps.txFactory();
     try {
+      // Atomicity target: the un-fulfill write + the ReservationUnfulfilled
+      // event. If the write throws, no ReservationUnfulfilled is published.
+      // AutoLoanFailed still fires OUTSIDE this tx (loud failure for the
+      // operator) — it is decoupled from the tx on purpose.
       await tx.run(async () => {
         deps.reservations.saveReservation(unfulfilled, tx);
+        const event: ReservationUnfulfilled = {
+          type: 'ReservationUnfulfilled',
+          reservationId: unfulfilled.reservationId,
+          memberId: unfulfilled.memberId,
+          bookId: unfulfilled.bookId,
+          unfulfilledAt: clock(),
+        };
+        tx.stageEvent(event);
       });
     } catch {
-      // Swallow: the reservation is left fulfilled-but-no-loan. The operator
-      // sees AutoLoanFailed and can investigate. Spec calls this out as an
-      // acceptable pathological state.
+      // Swallow: reservation left fulfilled-but-no-loan, no ReservationUnfulfilled
+      // published (tx rolled back). AutoLoanFailed still fires below so the
+      // operator can investigate. Spec calls this acceptable pathological state.
     }
   };
 

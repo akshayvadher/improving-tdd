@@ -134,9 +134,15 @@ describe('AutoLoanOnReturnConsumer', () => {
       expect(bobLoans[0]?.bookId).toBe(copy.bookId);
       expect(bobLoans[0]?.returnedAt).toBeUndefined();
 
-      // and the bus shows LoanReturned -> LoanOpened (from borrow) ->
-      // AutoLoanOpened (from the consumer, after borrow resolves).
-      expect(eventTypes(scene.bus)).toEqual(['LoanReturned', 'LoanOpened', 'AutoLoanOpened']);
+      // and the bus shows LoanReturned -> ReservationFulfilled (from the
+      // claim tx) -> LoanOpened (from borrow) -> AutoLoanOpened (from the
+      // consumer, after borrow resolves).
+      expect(eventTypes(scene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'LoanOpened',
+        'AutoLoanOpened',
+      ]);
 
       // the reservation is marked fulfilled by the claim-first write
       const [reservation] = await scene.reservations.listReservations();
@@ -214,10 +220,15 @@ describe('AutoLoanOnReturnConsumer', () => {
       expect(suspendedReservation?.fulfilledAt).toBeUndefined();
       expect(eligibleReservation?.fulfilledAt).toEqual(FIXED_NOW);
 
-      // and the bus shows LoanReturned (from returnLoan), LoanOpened (from
-      // the consumer's borrow), AutoLoanOpened (from the consumer after
-      // borrow resolved).
-      expect(eventTypes(scene.bus)).toEqual(['LoanReturned', 'LoanOpened', 'AutoLoanOpened']);
+      // and the bus shows LoanReturned (from returnLoan), ReservationFulfilled
+      // (from the claim tx), LoanOpened (from the consumer's borrow),
+      // AutoLoanOpened (from the consumer after borrow resolved).
+      expect(eventTypes(scene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'LoanOpened',
+        'AutoLoanOpened',
+      ]);
     });
 
     it('walks past multiple ineligible reservations and stops at the first eligible one (AC-2.1, AC-2.3)', async () => {
@@ -257,8 +268,14 @@ describe('AutoLoanOnReturnConsumer', () => {
 
       // and the bus shows exactly one LoanOpened and one AutoLoanOpened —
       // the consumer did not continue iterating after the first eligible
-      // borrow
-      expect(eventTypes(scene.bus)).toEqual(['LoanReturned', 'LoanOpened', 'AutoLoanOpened']);
+      // borrow. ReservationFulfilled fires for the chosen reservation (not
+      // for the skipped ones, since those were never claim-written).
+      expect(eventTypes(scene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'LoanOpened',
+        'AutoLoanOpened',
+      ]);
     });
 
     it('is a no-op when every queued reservation is ineligible (AC-2.4, AC-2.6)', async () => {
@@ -372,8 +389,14 @@ describe('AutoLoanOnReturnConsumer', () => {
       expect(bobLoans).toHaveLength(1);
       const bobLoan = bobLoans[0] as LoanDto;
 
-      // order: LoanReturned (returnLoan) -> LoanOpened (borrow) -> AutoLoanOpened (consumer)
-      expect(eventTypes(scene.bus)).toEqual(['LoanReturned', 'LoanOpened', 'AutoLoanOpened']);
+      // order: LoanReturned (returnLoan) -> ReservationFulfilled (claim tx) ->
+      // LoanOpened (borrow) -> AutoLoanOpened (consumer after borrow)
+      expect(eventTypes(scene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'LoanOpened',
+        'AutoLoanOpened',
+      ]);
 
       const autoOpened = scene.bus.collected().find((e) => e.type === 'AutoLoanOpened') as
         | AutoLoanOpened
@@ -417,8 +440,15 @@ describe('AutoLoanOnReturnConsumer', () => {
       const [reservation] = await altScene.reservations.listReservations();
       expect(reservation?.fulfilledAt).toBeUndefined();
 
-      // bus shows LoanReturned and AutoLoanFailed — no LoanOpened, no AutoLoanOpened
-      expect(eventTypes(altScene.bus)).toEqual(['LoanReturned', 'AutoLoanFailed']);
+      // bus order: LoanReturned (returnLoan) -> ReservationFulfilled (claim
+      // tx committed) -> ReservationUnfulfilled (un-fulfill tx committed
+      // after borrow threw) -> AutoLoanFailed. No LoanOpened, no AutoLoanOpened.
+      expect(eventTypes(altScene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'ReservationUnfulfilled',
+        'AutoLoanFailed',
+      ]);
 
       const failed = altScene.bus.collected().find((e) => e.type === 'AutoLoanFailed') as
         | AutoLoanFailed
@@ -484,8 +514,11 @@ describe('AutoLoanOnReturnConsumer', () => {
         loanId: aliceLoan.loanId,
       });
 
-      // AutoLoanFailed still emitted with the ORIGINAL borrow error message
-      expect(eventTypes(bus)).toEqual(['LoanReturned', 'AutoLoanFailed']);
+      // Claim tx committed -> ReservationFulfilled. Un-fulfill tx rejected ->
+      // NO ReservationUnfulfilled (tx rolled back both write + staged event).
+      // AutoLoanFailed fires anyway — it is published OUTSIDE the un-fulfill
+      // tx so the operator sees the failure regardless.
+      expect(eventTypes(bus)).toEqual(['LoanReturned', 'ReservationFulfilled', 'AutoLoanFailed']);
       const failed = bus.collected().find((e) => e.type === 'AutoLoanFailed') as
         | AutoLoanFailed
         | undefined;
@@ -593,7 +626,12 @@ describe('AutoLoanOnReturnConsumer', () => {
 
       // The consumer's full happy-path still completed end-to-end.
       expect(await scene.lending.listLoansFor(bob.memberId)).toHaveLength(1);
-      expect(eventTypes(scene.bus)).toEqual(['LoanReturned', 'LoanOpened', 'AutoLoanOpened']);
+      expect(eventTypes(scene.bus)).toEqual([
+        'LoanReturned',
+        'ReservationFulfilled',
+        'LoanOpened',
+        'AutoLoanOpened',
+      ]);
     });
   });
 
@@ -728,6 +766,142 @@ describe('AutoLoanOnReturnConsumer', () => {
         | undefined;
       expect(failed?.reservationId).toBe(bobReservation.reservationId);
       expect(failed?.memberId).toBe(bob.memberId);
+    });
+  });
+
+  describe('transactional atomicity of the claim (tx showcase)', () => {
+    it('rolls back the staged ReservationFulfilled event when the claim save fails', async () => {
+      // This pins the reason the consumer wraps its reservation write in a
+      // tx.run(...) at all: the reservation save and the ReservationFulfilled
+      // event are atomic as a pair. If the save rejects, the staged event
+      // never publishes — downstream subscribers never see a fulfilled
+      // reservation that did not actually land in the repo.
+      //
+      // Call count of saveReservation: #1 is bob.reserve (succeeds);
+      // #2 is the consumer's claim tx (arm to fail).
+      const throwingReservations = new ThrowingOnTrigger();
+      const bus = new InMemoryEventBus();
+      const catalog = createCatalogFacade({ newId: sequentialIds('cat') });
+      const membership = createMembershipFacade({ newId: sequentialIds('mem') });
+      const txFactory = () => new InMemoryTransactionalContext(bus);
+      const lending = createLendingFacade({
+        catalogFacade: catalog,
+        membershipFacade: membership,
+        reservationRepository: throwingReservations,
+        eventBus: bus,
+        txFactory,
+        newId: sequentialIds('loan'),
+        clock: fixedClock,
+      });
+      const consumer = createAutoLoanOnReturnConsumer({
+        bus,
+        membership,
+        reservations: throwingReservations,
+        lending,
+        txFactory,
+        clock: fixedClock,
+      });
+      consumer.start();
+
+      const book = await catalog.addBook(sampleNewBook({ isbn: '978-0000000111' }));
+      const copy = await catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
+      const alice = await membership.registerMember(
+        sampleNewMember({ name: 'Alice', email: 'alice-tx-1@lib.test' }),
+      );
+      const bob = await membership.registerMember(
+        sampleNewMember({ name: 'Bob', email: 'bob-tx-1@lib.test' }),
+      );
+      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      await lending.reserve(bob.memberId, book.bookId);
+      bus.clear();
+
+      throwingReservations.armNthSaveFailure(2, new Error('reservation store is down'));
+
+      // The claim failure propagates out: consumer's try/catch wraps borrow
+      // only, not the claim. bus.publish(LoanReturned) therefore rejects,
+      // and returnLoan rejects to the caller.
+      await expect(lending.returnLoan(aliceLoan.loanId)).rejects.toThrow(
+        'reservation store is down',
+      );
+
+      // The reservation is STILL pending — the tx rolled back the save.
+      const [reservation] = await throwingReservations.listReservations();
+      expect(reservation?.fulfilledAt).toBeUndefined();
+
+      // And critically: ReservationFulfilled did NOT publish. If the tx had
+      // not wrapped the save + stageEvent together, a naive implementation
+      // would have published the event before (or independent of) the save
+      // rejection. The tx is what makes this atomic.
+      expect(eventTypes(bus)).toEqual(['LoanReturned']);
+
+      // No borrow happened, no loan for bob.
+      expect(await lending.listLoansFor(bob.memberId)).toEqual([]);
+
+      consumer.stop();
+    });
+
+    it('rolls back the staged ReservationUnfulfilled event when the un-fulfill save fails', async () => {
+      // Symmetric showcase for the un-fulfill path. Borrow fails -> consumer
+      // runs the un-fulfill tx. If the un-fulfill save ALSO fails, the staged
+      // ReservationUnfulfilled event must not publish (tx rolled back). The
+      // existing "un-fulfill throws" failure-policy test at the top of this
+      // file covers the same mechanism from a different angle; this one
+      // isolates the atomicity claim for review readers.
+      //
+      // Call count of saveReservation: #1 bob.reserve, #2 claim (success),
+      // #3 un-fulfill (arm to fail).
+      const throwingLoans = new ThrowingOnceLoanRepository();
+      const throwingReservations = new ThrowingOnTrigger();
+      const bus = new InMemoryEventBus();
+      const catalog = createCatalogFacade({ newId: sequentialIds('cat') });
+      const membership = createMembershipFacade({ newId: sequentialIds('mem') });
+      const txFactory = () => new InMemoryTransactionalContext(bus);
+      const lending = createLendingFacade({
+        catalogFacade: catalog,
+        membershipFacade: membership,
+        loanRepository: throwingLoans,
+        reservationRepository: throwingReservations,
+        eventBus: bus,
+        txFactory,
+        newId: sequentialIds('loan'),
+        clock: fixedClock,
+      });
+      const consumer = createAutoLoanOnReturnConsumer({
+        bus,
+        membership,
+        reservations: throwingReservations,
+        lending,
+        txFactory,
+        clock: fixedClock,
+      });
+      consumer.start();
+
+      const book = await catalog.addBook(sampleNewBook({ isbn: '978-0000000222' }));
+      const copy = await catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
+      const alice = await membership.registerMember(
+        sampleNewMember({ name: 'Alice', email: 'alice-tx-2@lib.test' }),
+      );
+      const bob = await membership.registerMember(
+        sampleNewMember({ name: 'Bob', email: 'bob-tx-2@lib.test' }),
+      );
+      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      await lending.reserve(bob.memberId, book.bookId);
+      bus.clear();
+
+      throwingLoans.armFailureOnNextNewLoan(new Error('loan store is down'));
+      throwingReservations.armNthSaveFailure(3, new Error('reservation store is down'));
+
+      await expect(lending.returnLoan(aliceLoan.loanId)).resolves.toMatchObject({
+        loanId: aliceLoan.loanId,
+      });
+
+      // Bus sequence: claim committed -> ReservationFulfilled published.
+      // Un-fulfill rolled back -> ReservationUnfulfilled NOT published.
+      // AutoLoanFailed fires OUTSIDE the un-fulfill tx so operators still
+      // see the failure.
+      expect(eventTypes(bus)).toEqual(['LoanReturned', 'ReservationFulfilled', 'AutoLoanFailed']);
+
+      consumer.stop();
     });
   });
 

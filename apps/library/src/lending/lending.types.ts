@@ -61,17 +61,20 @@ export interface ReservationQueued extends DomainEvent {
   reservedAt: Date;
 }
 
-/**
- * @deprecated No longer emitted. Reservation fulfillment is now a side-effect
- * of the auto-loan-on-return consumer; subscribe to `AutoLoanOpened` instead.
- * Kept only to avoid breaking downstream type consumers.
- */
 export interface ReservationFulfilled extends DomainEvent {
   type: 'ReservationFulfilled';
   reservationId: ReservationId;
   memberId: MemberId;
   bookId: BookId;
   fulfilledAt: Date;
+}
+
+export interface ReservationUnfulfilled extends DomainEvent {
+  type: 'ReservationUnfulfilled';
+  reservationId: ReservationId;
+  memberId: MemberId;
+  bookId: BookId;
+  unfulfilledAt: Date;
 }
 
 export interface AutoLoanOpened extends DomainEvent {
@@ -97,6 +100,7 @@ export type LendingEvent =
   | LoanReturned
   | ReservationQueued
   | ReservationFulfilled
+  | ReservationUnfulfilled
   | AutoLoanOpened
   | AutoLoanFailed;
 
