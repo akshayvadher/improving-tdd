@@ -10,6 +10,7 @@ import { Module } from '@nestjs/common';
 
 import type { ChatGateway } from '../shared/chat-gateway/chat-gateway.js';
 import { InMemoryChatGateway } from '../shared/chat-gateway/in-memory-chat-gateway.js';
+import { ChatController } from './chat.controller.js';
 import { ChatFacade } from './chat.facade.js';
 
 export const CHAT_GATEWAY = Symbol('ChatGateway');
@@ -24,6 +25,7 @@ function selectChatGateway(): ChatGateway {
 }
 
 @Module({
+  controllers: [ChatController],
   providers: [
     {
       provide: CHAT_GATEWAY,

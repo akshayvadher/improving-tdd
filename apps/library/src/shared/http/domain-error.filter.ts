@@ -12,6 +12,7 @@ import {
   InvalidBookError,
   InvalidCopyError,
 } from '../../catalog/index.js';
+import { InvalidChatRequestError } from '../../chat/index.js';
 import { FineAlreadyPaidError, FineNotFoundError } from '../../fines/index.js';
 import {
   CopyUnavailableError,
@@ -50,6 +51,7 @@ const INVALID_REQUEST_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   InvalidBookError,
   InvalidCopyError,
   InvalidMemberError,
+  InvalidChatRequestError,
 ];
 
 @Catch(Error)
