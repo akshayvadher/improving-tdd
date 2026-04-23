@@ -38,4 +38,8 @@ export class CategoriesFacade {
     }
     return category;
   }
+
+  async listByPrefix(prefix: string): Promise<Category[]> {
+    return this.repository.findByNamePrefix(prefix);
+  }
 }

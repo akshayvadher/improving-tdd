@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { asc, eq, ilike } from 'drizzle-orm';
 import type { PgDatabase, QueryResultHKT } from 'drizzle-orm/pg-core';
 
 import { categories } from '../db/schema/index.js';
@@ -13,6 +13,7 @@ type CategoryRow = typeof categories.$inferSelect;
 type AnyPgDatabase = PgDatabase<QueryResultHKT, Record<string, unknown>>;
 
 const UNIQUE_VIOLATION = '23505';
+const MAX_PREFIX_RESULTS = 100;
 
 export class DrizzleCategoryRepository implements CategoryRepository {
   constructor(private readonly db: AnyPgDatabase) {}
@@ -31,6 +32,16 @@ export class DrizzleCategoryRepository implements CategoryRepository {
   async findById(id: CategoryId): Promise<Category | undefined> {
     const [row] = await this.db.select().from(categories).where(eq(categories.id, id));
     return row ? toDto(row) : undefined;
+  }
+
+  async findByNamePrefix(prefix: string): Promise<Category[]> {
+    const rows = await this.db
+      .select()
+      .from(categories)
+      .where(ilike(categories.name, `${prefix}%`))
+      .orderBy(asc(categories.name))
+      .limit(MAX_PREFIX_RESULTS);
+    return rows.map(toDto);
   }
 }
 

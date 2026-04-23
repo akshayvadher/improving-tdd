@@ -15,6 +15,7 @@ import {
 import {
   CategoryNotFoundError,
   DuplicateCategoryError,
+  InvalidCategoriesQueryError,
   InvalidCategoryError,
 } from '../../categories/index.js';
 import { InvalidChatRequestError } from '../../chat/index.js';
@@ -60,6 +61,7 @@ const INVALID_REQUEST_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   InvalidMemberError,
   InvalidChatRequestError,
   InvalidCategoryError,
+  InvalidCategoriesQueryError,
 ];
 
 @Catch(Error)

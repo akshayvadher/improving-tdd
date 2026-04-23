@@ -152,4 +152,72 @@ describe('CategoriesFacade', () => {
       );
     });
   });
+
+  describe('listByPrefix', () => {
+    // Seeds in this block deliberately avoid lowercase-before-uppercase ambiguity
+    // ('apple' vs 'Art'). JS localeCompare (en-US) orders case-mixed names
+    // differently from Postgres default collation (byte order). Every seed here
+    // sorts identically under both collations, keeping the facade spec an honest
+    // mirror of the PGlite spec. See categories.pglite.spec.ts for the
+    // substrate-ordering findings.
+    it('returns matches sorted by name ASC for a given prefix', async () => {
+      // given four categories seeded with names that sort identically under JS and Postgres collation
+      const categories = createCategoriesFacade({ newId: sequentialIds(), clock: fixedClock });
+      await categories.createCategory({ name: 'Apple' });
+      await categories.createCategory({ name: 'art' });
+      await categories.createCategory({ name: 'Banana' });
+      await categories.createCategory({ name: 'blueberry' });
+
+      // when the prefix 'a' is queried
+      const matches = await categories.listByPrefix('a');
+
+      // then only the a-prefixed names are returned, in ASC order
+      expect(matches.map((category) => category.name)).toEqual(['Apple', 'art']);
+    });
+
+    it('returns [] when no category name matches the prefix', async () => {
+      // given a facade with a couple of unrelated categories
+      const categories = createCategoriesFacade({ newId: sequentialIds(), clock: fixedClock });
+      await categories.createCategory({ name: 'Fiction' });
+      await categories.createCategory({ name: 'History' });
+
+      // when a prefix that matches nothing is queried
+      const matches = await categories.listByPrefix('zzz');
+
+      // then the result is an empty array, not an error
+      expect(matches).toEqual([]);
+    });
+
+    it('matches case-insensitively so prefix "a" finds both "Apple" and "art"', async () => {
+      // given names with mixed casing
+      const categories = createCategoriesFacade({ newId: sequentialIds(), clock: fixedClock });
+      await categories.createCategory({ name: 'Apple' });
+      await categories.createCategory({ name: 'art' });
+      await categories.createCategory({ name: 'Banana' });
+
+      // when the lowercase prefix 'a' is queried
+      const matches = await categories.listByPrefix('a');
+
+      // then both case variants are in the result (set check; order asserted elsewhere)
+      const names = matches.map((category) => category.name);
+      expect(names).toHaveLength(2);
+      expect(new Set(names)).toEqual(new Set(['Apple', 'art']));
+    });
+
+    it('caps the result at 100 rows even when more categories match the prefix', async () => {
+      // given 101 cat-prefixed categories seeded via a loop (names sort identically under JS and Postgres)
+      const categories = createCategoriesFacade({ newId: sequentialIds('cat'), clock: fixedClock });
+      for (let index = 0; index <= 100; index += 1) {
+        await categories.createCategory({ name: `cat${String(index).padStart(3, '0')}` });
+      }
+
+      // when the prefix 'cat' is queried
+      const matches = await categories.listByPrefix('cat');
+
+      // then exactly 100 rows come back and the first one is 'cat000' (ordered ASC)
+      expect(matches).toHaveLength(100);
+      expect(matches[0]?.name).toBe('cat000');
+      expect(matches[99]?.name).toBe('cat099');
+    });
+  });
 });

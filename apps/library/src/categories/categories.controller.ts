@@ -1,7 +1,11 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
 
 import { CategoriesFacade, type NewCategoryDto } from './categories.facade.js';
-import { type Category, type CategoryId } from './categories.types.js';
+import {
+  InvalidCategoriesQueryError,
+  type Category,
+  type CategoryId,
+} from './categories.types.js';
 
 @Controller('categories')
 export class CategoriesController {
@@ -10,6 +14,14 @@ export class CategoriesController {
   @Post()
   createCategory(@Body() dto: NewCategoryDto): Promise<Category> {
     return this.facade.createCategory(dto);
+  }
+
+  @Get()
+  listByPrefix(@Query('startsWith') startsWith?: string): Promise<Category[]> {
+    if (!startsWith || startsWith.trim() === '') {
+      throw new InvalidCategoriesQueryError('startsWith is required');
+    }
+    return this.facade.listByPrefix(startsWith);
   }
 
   @Get(':id')
