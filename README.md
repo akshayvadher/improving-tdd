@@ -63,7 +63,7 @@ Runs the Categories module against a real Postgres via PGlite (WASM, no Docker).
 pnpm test:integration
 ```
 
-Requires Docker or Podman. Uses `testcontainers` to boot a pinned `postgres:16` image, runs Drizzle migrations, and exercises one crucial-path per module plus the return-loan atomicity test. Exits with a clear message if no runtime is reachable.
+Requires Docker or Podman. Uses `testcontainers` to boot a pinned `postgres:16` image, runs Drizzle migrations, and exercises one crucial-path per module. Exits with a clear message if no runtime is reachable.
 
 **Podman note.** When Podman is detected, the test support wires `DOCKER_HOST` and `TESTCONTAINERS_RYUK_DISABLED=true` automatically — no manual env setup needed. On Windows, ensure `podman machine start` has been run at least once; the machine must be rootful (`podman machine init --rootful`) for testcontainers to mount volumes.
 

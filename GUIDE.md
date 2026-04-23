@@ -67,7 +67,7 @@ private async updateCopyStatus(copyId: CopyId, status: CopyStatus): Promise<Copy
 
 Full-stack tests against real HTTP and a real database catch integration bugs but they cost you seconds per case. A thousand of those and you wait 45 minutes for the suite. Developers stop running it locally, CI becomes the only signal, and feedback collapses.
 
-The demo reserves full-stack testing for *crucial paths only* — one integration test per module plus the return-loan atomicity test. Every other scenario — corner cases, error paths, the reservation DSL — runs in memory at facade level.
+The demo reserves full-stack testing for *crucial paths only* — one integration test per module. Every other scenario — corner cases, error paths, atomicity, the reservation DSL — runs in memory at facade level.
 
 Captured vitest output from `pnpm test:unit`:
 
@@ -84,32 +84,7 @@ Captured vitest output from `pnpm test:unit`:
 
 Forty tests, nineteen milliseconds of actual assertions. The rest is cold-start overhead that disappears in watch mode.
 
-The only place a Postgres testcontainer shows up for Lending — everything else is in memory:
-
-```ts
-// apps/library/test/lending.return-loan.integration.spec.ts
-suite('Lending returnLoan atomicity (real Postgres)', () => {
-  let fixture: PostgresFixture;
-  let app: INestApplication;
-
-  beforeAll(async () => {
-    fixture = await startPostgres();
-    app = await createTestApp({ databaseUrl: fixture.connectionUrl });
-    failingRepo = installFailingReservationRepo(app.get(LendingFacade));
-  }, 120_000);
-
-  it('rolls back the loan update when the fulfillment write fails inside the tx', async () => {
-    // given alice borrowed a book and bob has a pending reservation for it
-    const loan = (await borrowCopy(app, alice.memberId, copy.copyId)).body;
-    await reserveBook(app, bob.memberId, book.bookId);
-    failingRepo.armFailure();
-
-    // when alice tries to return — fulfillment write throws inside the tx
-    // then the loan update rolls back
-    // …
-  });
-});
-```
+Lending's only Postgres testcontainer is the crucial-path happy-path (`test/lending.crucial-path.integration.spec.ts`). Atomicity — the contract that `returnLoan`'s tx rolls back the loan write and suppresses `LoanReturned` when a staged callback throws, and that the consumer's claim/un-fulfill tx rolls back its staged event when the save throws — runs in memory against a `ThrowingOnceLoanRepository` wrapper in `apps/library/src/lending/lending.facade.spec.ts` (see `describe('atomicity')`) and `apps/library/src/lending/auto-loan-on-return.consumer.spec.ts` (see `describe('transactional atomicity of the claim (tx showcase)')`). The tx interface is the same in memory and in production — the in-memory substrate proves the contract in milliseconds without booting Postgres.
 
 ---
 
