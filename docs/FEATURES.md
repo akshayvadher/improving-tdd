@@ -161,6 +161,12 @@ This is the behaviour the canonical `ThrowingOnceMembershipFacade` test in `fine
 
 ---
 
+## Chat — "ask a question, stream a completion"
+
+An auxiliary capability, not a fifth domain module — so it does not appear in the four-module overview table above. Chat is a stateless passthrough: `POST /chat` with an OpenAI-style `{ messages: [{ role, content }] }` body returns a Server-Sent Events stream. Zero or more `event: delta` frames (`data: {"text": "..."}`) carry the completion chunk by chunk, followed by a terminal `event: done`; if the upstream provider fails mid-stream the facade shapes a terminal `event: error` frame so the client always sees an explicit wire-level end. No persistence, no conversation history, no authentication — each request is independent. The upstream LLM sits behind a pluggable `ChatGateway` port; the shipped in-memory default services every test and every dev-machine run, and a real OpenAI-backed adapter wires in automatically when `OPENAI_API_KEY` is set in the environment.
+
+---
+
 ## What the application does *not* do
 
 Deliberately out of scope, to keep the teaching focus on testing rather than modelling:
@@ -205,5 +211,6 @@ For when you want to curl the thing:
 | `GET    /members/:memberId/fines`          | List a member's fines.                  |
 | `GET    /fines/:fineId`                    | Look up a single fine.                  |
 | `PATCH  /fines/:fineId/paid`               | Mark a fine paid.                       |
+| `POST   /chat`                             | Stream a chat completion as Server-Sent Events. |
 
 Run `pnpm --filter library start:dev` to hit them.

@@ -2,6 +2,8 @@ import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CHAT_GATEWAY, ChatModule } from '../src/chat/chat.module.js';
+import type { ChatMessage } from '../src/chat/chat.types.js';
+import type { ChatDelta } from '../src/shared/chat-gateway/chat-delta.js';
 import type { ChatGateway } from '../src/shared/chat-gateway/chat-gateway.js';
 import { InMemoryChatGateway } from '../src/shared/chat-gateway/in-memory-chat-gateway.js';
 import { DomainErrorFilter } from '../src/shared/http/domain-error.filter.js';
@@ -156,4 +158,60 @@ describe('Chat crucial path (HTTP SSE)', () => {
     expect(parsed.error).toBe('InvalidChatRequestError');
   });
 
+  it('streams prior deltas then a terminal error frame when the gateway throws mid-stream (AC-5.5)', async () => {
+    // given an underlying gateway seeded with two deltas for "hi" and a
+    // spec-local mid-stream-throwing wrapper — the wrapper yields the first
+    // delta from the delegate, then throws on the second pull to simulate
+    // an upstream failure partway through the response.
+    const delegate = new InMemoryChatGateway();
+    delegate.reply('hi', [{ text: 'hel' }, { text: 'lo' }]);
+    const throwing = new ThrowingAfterFirstDeltaChatGateway(delegate, new Error('upstream down'));
+    app = await buildChatApp(throwing);
+
+    // when the client posts a chat request
+    const response = await streamChat(app, {
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    // then HTTP 200 with SSE framing — one delta frame then a terminal error
+    // frame, and NO trailing done frame
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain('text/event-stream');
+    expect(response.frames).toEqual([
+      { event: 'delta', data: { text: 'hel' } },
+      { event: 'error', data: { message: 'upstream down' } },
+    ]);
+
+    // and the wire body carries the literal `event: error` frame with no
+    // `event: done` following it
+    expect(response.rawBody).toContain('event: delta\n');
+    expect(response.rawBody).toContain('event: error\n');
+    expect(response.rawBody).toContain('data: {"message":"upstream down"}\n');
+    expect(response.rawBody).not.toContain('event: done');
+  });
 });
+
+// --- ThrowingAfterFirstDeltaChatGateway ------------------------------------
+// Spec-local wrapper that yields the delegate's first delta, then throws on
+// the next pull. The integration variant of ThrowingOnceChatGateway (in
+// chat.facade.spec.ts) — the arming timing that a facade-level test performs
+// manually between yields is expressed here as a fixed scripted shape so one
+// HTTP POST reproduces the mid-stream-failure contract. Intentionally NOT
+// exported.
+class ThrowingAfterFirstDeltaChatGateway implements ChatGateway {
+  constructor(
+    private readonly delegate: ChatGateway,
+    private readonly error: Error,
+  ) {}
+
+  async *stream(messages: ChatMessage[]): AsyncIterable<ChatDelta> {
+    let yielded = 0;
+    for await (const delta of this.delegate.stream(messages)) {
+      if (yielded >= 1) {
+        throw this.error;
+      }
+      yielded += 1;
+      yield delta;
+    }
+  }
+}

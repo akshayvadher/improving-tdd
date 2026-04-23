@@ -324,6 +324,8 @@ This is scoped to **one module's own data**. The cross-module call `catalog.mark
 
 The "in-memory, not mocks" rule applies just as much to **outbound collaborators** — external APIs the module calls — as it does to the module's own repositories. An inbound port (a repository) and an outbound port (a gateway) are symmetric: both are interfaces, both get a real in-memory default, and neither gets mocked.
 
+Request/response gateways: `IsbnLookupGateway`. Streaming gateways: `ChatGateway` — see Principle 13.
+
 The canonical example is `IsbnLookupGateway` in `apps/library/src/shared/isbn-gateway/`. `CatalogFacade.addBook` calls it to enrich missing `title` / `authors` from an ISBN. The port (`isbn-lookup-gateway.ts`) is a one-method interface; `InMemoryIsbnLookupGateway` (`in-memory-isbn-lookup-gateway.ts`) is a `Map`-backed default with a `seed(isbn, metadata)` helper for tests. The Nest wiring registers the in-memory gateway as the production default — there is no real HTTP adapter yet, and when one arrives the port does not change.
 
 Fault injection for an outbound gateway uses the same wrapper pattern as for own repositories. `ThrowingOnceIsbnLookupGateway` (spec-local inside `apps/library/src/catalog/catalog.facade.spec.ts` — not exported from any barrel) decorates the in-memory default, exposes `armFailureOnNextLookup(error)`, throws once on the next `findByIsbn`, then clears its slot. It mirrors `ThrowingOnceReservationRepository` (`apps/library/src/lending/lending.facade.spec.ts`) line-for-line; the only difference is that one fails an own-data write and the other fails an outbound read.
@@ -777,6 +779,68 @@ async listOverdueLoansWithTitles(now: Date): Promise<OverdueLoanReport[]> {
 Two tables, two modules, zero SQL JOIN. This is Principle 7 with the JOIN-specific rule attached: the facade is the seam, cross-module consistency is composition, never a shared schema. Each side stays testable with its own in-memory fake — Catalog's `Map<BookId, BookDto>` answers `getBooks` the same way Postgres does, and Lending's test wires a real `CatalogFacade` via `buildScene()` rather than a JOIN-aware fake.
 
 A JOIN is fine inside a module; across modules, compose through the facade.
+
+---
+
+## Principle 13 — Streaming gateways: how do we test a streaming port in-memory?
+
+A streaming outbound gateway is still a port. The in-memory default is still a class. Fault injection is still a tiny wrapper declared next to the tests that use it. The only new wrinkle is that "the error" has a wire-format representation, because SSE commits a `200 OK` before any content is sent — so an upstream failure cannot be an HTTP status, it has to be a terminal frame inside the stream.
+
+### The port
+
+The chat module's outbound seam is `ChatGateway` in `apps/library/src/shared/chat-gateway/chat-gateway.ts:9-11`:
+
+```ts
+export interface ChatGateway {
+  stream(messages: ChatMessage[]): AsyncIterable<ChatDelta>;
+}
+```
+
+`AsyncIterable<ChatDelta>` is the streaming analog of a plain return value. Where `IsbnLookupGateway.findByIsbn` returns a `Promise<BookMetadata | null>` — one request, one response — `ChatGateway.stream` returns a sequence of deltas over time. No rxjs in the port; rxjs appears only at the `@Sse()` controller boundary. The shape `async *stream(messages) { yield …; }` is a plain generator — no stream library required.
+
+### The in-memory default
+
+`InMemoryChatGateway` at `apps/library/src/shared/chat-gateway/in-memory-chat-gateway.ts:19-38` is the shipped default. Seeding is `reply(userContent, deltas)` — script a response for a given last-user-message `content`. Keys are normalized by trimming only (no lowercasing); tests needing case-insensitive match seed multiple keys. Unseeded prompts yield a single innocuous `{ text: '…' }` default delta then complete — the adapter never throws on unseeded input, so low-seeding happy-path tests stay terse while content-sensitive tests still fail on delta comparisons.
+
+The `Map<string, ChatDelta[]>` backing store answers `stream()` the same way a real OpenAI response would: one `ChatDelta` per iteration, then the iterator completes. Same interface as the real adapter — the "real" shape of the gateway IS the in-memory one.
+
+### Fault injection — `ThrowingOnceChatGateway`
+
+`ThrowingOnceChatGateway` lives spec-local inside `apps/library/src/chat/chat.facade.spec.ts:241-272`, not exported from any barrel. It decorates any `ChatGateway`, exposes `armFailureBeforeStream(error)` and `armFailureMidStream(error)`, throws once when armed, and clears its slot after firing. Mirrors `ThrowingOnceIsbnLookupGateway` (`catalog.facade.spec.ts:556-573`) line-for-line — the only difference is that one fails a request/response lookup and the other fails a streaming pull.
+
+Why spec-local: the wrapper exists to prove one behavior that the real in-memory gateway cannot produce — a deterministic fault at a specific moment in the stream. It is test infrastructure, not a module surface. If a second test file ever needs it, extract it then. Until then, it sits at the bottom of the one spec that uses it, under a comment block that names the teaching moment.
+
+### The wire contract
+
+SSE commits `200 OK` to the wire before the first delta flushes. By the time an upstream `ChatGateway.stream()` throws, the HTTP status is already sent — it cannot become a 500. The error has to surface as a terminal frame inside the stream.
+
+`ChatFacade.streamFrames` shapes that frame before Nest sees it (`apps/library/src/chat/chat.facade.ts:16-27`):
+
+```ts
+private async *streamFrames(messages: ChatMessage[]): AsyncIterable<ChatFrame> {
+  try {
+    for await (const delta of this.gateway.stream(messages)) {
+      yield { type: 'delta', text: delta.text };
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    yield { type: 'error', message };
+    return;
+  }
+  yield { type: 'done' };
+}
+```
+
+Two things to notice:
+
+1. **`yield { type: 'done' }` is OUTSIDE the `try`.** A `return` after the error frame ensures no `done` frame follows. An error and a done are mutually exclusive terminal states — never both.
+2. **The facade never re-throws.** When the gateway throws, the Observable that Nest sees still completes normally. Nest ends the response cleanly, and the client sees the terminal `event: error` frame it needs to react to.
+
+The crucial-path integration test at `apps/library/test/chat.crucial-path.integration.spec.ts` pins the wire contract: `event: delta` frames, then `event: error\ndata: {"message":"…"}\n\n`, no trailing `event: done`, HTTP status still 200.
+
+### The rule
+
+A streaming port is still an interface. An in-memory adapter is still a class. Fault injection is still a tiny wrapper. The only new wrinkle is that "the error" has a wire-format representation — because SSE commits a 200 before content, the terminal frame IS the error signal. Pin that contract in one test, shape the frame in the facade, and the rest of the pattern reads exactly like Principle 5.
 
 ---
 

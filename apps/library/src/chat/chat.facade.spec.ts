@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ChatDelta } from '../shared/chat-gateway/chat-delta.js';
+import type { ChatGateway } from '../shared/chat-gateway/chat-gateway.js';
 import { InMemoryChatGateway } from '../shared/chat-gateway/in-memory-chat-gateway.js';
 import { createChatFacade } from './chat.configuration.js';
 import type { ChatFacade } from './chat.facade.js';
-import { type ChatFrame, InvalidChatRequestError } from './chat.types.js';
+import { type ChatFrame, type ChatMessage, InvalidChatRequestError } from './chat.types.js';
 import * as chatBarrel from './index.js';
 import { sampleChatRequest, sampleUserMessage } from './sample-chat-data.js';
 
@@ -137,6 +139,78 @@ describe('createChatFacade — gateway wiring (AC-2.9)', () => {
   });
 });
 
+describe('chat — gateway failures', () => {
+  it('yields only a terminal error frame when the gateway throws before streaming (AC-5.2)', async () => {
+    // given a throwing wrapper armed to fail BEFORE any delta yields
+    const delegate = new InMemoryChatGateway();
+    const gateway = new ThrowingOnceChatGateway(delegate);
+    gateway.armFailureBeforeStream(new Error('upstream down'));
+    const facade = createChatFacade({ gateway });
+
+    // when the facade streams the request
+    const frames = await collectFrames(facade, sampleChatRequest());
+
+    // then the ONLY frame is the terminal error — no done frame follows
+    expect(frames).toEqual([{ type: 'error', message: 'upstream down' }]);
+  });
+
+  it('yields prior deltas then a terminal error frame when the gateway throws mid-stream (AC-5.3)', async () => {
+    // given an underlying gateway seeded with two deltas for "hi"
+    const delegate = new InMemoryChatGateway();
+    delegate.reply('hi', [{ text: 'hel' }, { text: 'lo' }]);
+    const gateway = new ThrowingOnceChatGateway(delegate);
+    const facade = createChatFacade({ gateway });
+
+    // when the facade streams — we pull the first frame, arm a mid-stream
+    // failure between yields, then drain the rest. This pins AC-5.3's timing:
+    // the arming fires AFTER the first delta has surfaced.
+    const iterator = facade
+      .streamChat({
+        messages: [{ role: 'user', content: 'hi' }],
+      })
+      [Symbol.asyncIterator]();
+    const frames: ChatFrame[] = [];
+    const first = await iterator.next();
+    if (!first.done) frames.push(first.value);
+    gateway.armFailureMidStream(new Error('midway'));
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done) break;
+      frames.push(next.value);
+    }
+
+    // then the first delta surfaces, then a terminal error frame — no done
+    expect(frames).toEqual([
+      { type: 'delta', text: 'hel' },
+      { type: 'error', message: 'midway' },
+    ]);
+  });
+
+  it('succeeds end-to-end on the next streamChat call after a failure has fired (AC-5.4)', async () => {
+    // given a gateway seeded for "hi" and armed to fail once before streaming
+    const delegate = new InMemoryChatGateway();
+    delegate.reply('hi', [{ text: 'hello' }]);
+    const gateway = new ThrowingOnceChatGateway(delegate);
+    gateway.armFailureBeforeStream(new Error('transient'));
+    const facade = createChatFacade({ gateway });
+
+    // when the first call fires the armed error
+    const firstFrames = await collectFrames(facade, {
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    // then a terminal error frame is produced
+    expect(firstFrames).toEqual([{ type: 'error', message: 'transient' }]);
+
+    // and when the facade streams again (arming is single-shot, now clear)
+    const secondFrames = await collectFrames(facade, {
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+
+    // then the second call succeeds end to end — deltas then done
+    expect(secondFrames).toEqual([{ type: 'delta', text: 'hello' }, { type: 'done' }]);
+  });
+});
 
 describe('chat barrel (AC-2.12)', () => {
   it('re-exports exactly the public surface and keeps internals private', () => {
@@ -154,3 +228,44 @@ describe('chat barrel (AC-2.12)', () => {
     expect(keys).not.toContain('ChatGateway');
   });
 });
+
+// --- ThrowingOnceChatGateway -----------------------------------------------
+// Spec-local wrapper that decorates a real in-memory ChatGateway and throws on
+// the next stream() call (before-stream) or on the next yield within an
+// already-open stream (mid-stream) when armed. Single-shot — clears the arming
+// after firing so the subsequent call behaves normally. Mirrors
+// ThrowingOnceIsbnLookupGateway in catalog.facade.spec.ts:551-573 — the
+// streaming-port twin of that teaching moment. Intentionally NOT exported —
+// this is the canonical teaching moment for Principle 13.
+class ThrowingOnceChatGateway implements ChatGateway {
+  private armedError: Error | null = null;
+  private armedPhase: 'before-stream' | 'mid-stream' = 'before-stream';
+
+  constructor(private readonly delegate: ChatGateway) {}
+
+  armFailureBeforeStream(error: Error): void {
+    this.armedError = error;
+    this.armedPhase = 'before-stream';
+  }
+
+  armFailureMidStream(error: Error): void {
+    this.armedError = error;
+    this.armedPhase = 'mid-stream';
+  }
+
+  async *stream(messages: ChatMessage[]): AsyncIterable<ChatDelta> {
+    if (this.armedError && this.armedPhase === 'before-stream') {
+      const err = this.armedError;
+      this.armedError = null;
+      throw err;
+    }
+    for await (const delta of this.delegate.stream(messages)) {
+      if (this.armedError && this.armedPhase === 'mid-stream') {
+        const err = this.armedError;
+        this.armedError = null;
+        throw err;
+      }
+      yield delta;
+    }
+  }
+}
