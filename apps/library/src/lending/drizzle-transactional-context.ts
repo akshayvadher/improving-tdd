@@ -43,7 +43,7 @@ export class DrizzleTransactionalContext implements TransactionalContext {
         await Promise.all(this.pending);
         return value;
       });
-      this.publishEvents();
+      await this.publishEvents();
       return result;
     } catch (error) {
       this.events = [];
@@ -54,9 +54,11 @@ export class DrizzleTransactionalContext implements TransactionalContext {
     }
   }
 
-  private publishEvents(): void {
+  private async publishEvents(): Promise<void> {
     const toPublish = this.events;
     this.events = [];
-    toPublish.forEach((event) => this.bus.publish(event));
+    for (const event of toPublish) {
+      await this.bus.publish(event);
+    }
   }
 }

@@ -38,7 +38,9 @@ export class InMemoryTransactionalContext implements TransactionalContext {
     for (const apply of writes) {
       await apply();
     }
-    events.forEach((event) => this.bus.publish(event));
+    for (const event of events) {
+      await this.bus.publish(event);
+    }
   }
 
   private discard(): void {

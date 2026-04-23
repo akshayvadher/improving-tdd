@@ -139,7 +139,7 @@ describe('reservation queue DSL', () => {
     expect(await dsl.queueFor(book)).toEqual(['alice', 'bob', 'carol']);
   });
 
-  it('fulfills the earliest-queued reservation when a borrower returns the book', async () => {
+  it('leaves the queue untouched on return — queue walking is the consumer\'s job', async () => {
     // given alice has borrowed a copy and two other members are waiting in line
     const book = 'refactoring';
     const copy = scene.seedAvailableCopy(book);
@@ -151,10 +151,12 @@ describe('reservation queue DSL', () => {
     // sanity check: the queue reflects bob ahead of carol
     expect(await dsl.queueFor(book)).toEqual(['bob', 'carol']);
 
-    // when alice returns the book
+    // when alice returns the book with no consumer wired
     await dsl.whenReturned(aliceLoan.loanId);
 
-    // then bob's reservation is fulfilled and only carol remains in the queue
-    expect(await dsl.queueFor(book)).toEqual(['carol']);
+    // then the queue is unchanged — returnLoan no longer fulfils reservations.
+    // The AutoLoanOnReturnConsumer owns queue-walking now (covered by its own
+    // spec), and this DSL scene does not spin one up.
+    expect(await dsl.queueFor(book)).toEqual(['bob', 'carol']);
   });
 });

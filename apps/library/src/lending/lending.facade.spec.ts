@@ -18,9 +18,12 @@ import { sampleNewBook, sampleNewCopy } from '../catalog/sample-catalog-data.js'
 import { createMembershipFacade } from '../membership/membership.configuration.js';
 import { sampleNewMember } from '../membership/sample-membership-data.js';
 import { InMemoryEventBus } from '../shared/events/in-memory-event-bus.js';
+import { InMemoryLoanRepository } from './in-memory-loan.repository.js';
 import { InMemoryReservationRepository } from './in-memory-reservation.repository.js';
+import { InMemoryTransactionalContext } from './in-memory-transactional-context.js';
 import { createLendingFacade, type LendingOverrides } from './lending.configuration.js';
-import type { ReservationDto } from './lending.types.js';
+import type { LoanDto, ReservationDto } from './lending.types.js';
+import type { LoanRepository } from './loan.repository.js';
 import type { ReservationRepository } from './reservation.repository.js';
 import type { TransactionalContext } from './transactional-context.js';
 import { CopyUnavailableError, LoanNotFoundError, MemberIneligibleError } from './lending.types.js';
@@ -96,6 +99,22 @@ function buildSceneWith(extra: Partial<LendingOverrides>): Scene {
 
 function eventTypes(bus: InMemoryEventBus): string[] {
   return bus.collected().map((event) => event.type);
+}
+
+// Marks the given reservation as fulfilled directly through the repository.
+// Used where a test needs fulfilled state but automatic fulfillment via
+// returnLoan is no longer wired (the AutoLoanOnReturnConsumer owns that path
+// now, and these facade-only tests do not spin one up).
+async function markReservationFulfilled(
+  repository: ReservationRepository,
+  reservation: ReservationDto,
+  fulfilledAt: Date,
+): Promise<void> {
+  const throwawayBus = new InMemoryEventBus();
+  const tx = new InMemoryTransactionalContext(throwawayBus);
+  await tx.run(async () => {
+    repository.saveReservation({ ...reservation, fulfilledAt }, tx);
+  });
 }
 
 describe('LendingFacade', () => {
@@ -199,20 +218,55 @@ describe('LendingFacade', () => {
       expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.AVAILABLE);
     });
 
-    it('fulfills a pending reservation and emits both LoanReturned and ReservationFulfilled', async () => {
+    it('emits ONLY LoanReturned when a pending reservation exists (queue walking moved to consumer)', async () => {
       // given alice has borrowed the book and bob has reserved it
-      const copy = await scene.seedAvailableCopy();
-      const alice = await scene.seedMember('Alice');
-      const bob = await scene.seedMember('Bob');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
-      await scene.facade.reserve(bob.memberId, copy.bookId);
-      scene.bus.clear();
+      const reservations = new InMemoryReservationRepository();
+      const altScene = buildSceneWith({ reservationRepository: reservations });
+      const copy = await altScene.seedAvailableCopy();
+      const alice = await altScene.seedMember('Alice');
+      const bob = await altScene.seedMember('Bob');
+      const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
+      const bobReservation = await altScene.facade.reserve(bob.memberId, copy.bookId);
+      altScene.bus.clear();
 
       // when alice returns the book
+      await altScene.facade.returnLoan(loan.loanId);
+
+      // then returnLoan emits LoanReturned only — ReservationFulfilled is no
+      // longer its concern. The AutoLoanOnReturnConsumer picks up the queue
+      // walk post-commit.
+      expect(eventTypes(altScene.bus)).toEqual(['LoanReturned']);
+
+      // AND the reservation remains pending (fulfilledAt still undefined) —
+      // the facade alone does not fulfil reservations; only the consumer does.
+      const storedReservation = await reservations.findReservationById(bobReservation.reservationId);
+      expect(storedReservation?.fulfilledAt).toBeUndefined();
+
+      // AND the copy ends AVAILABLE because there is no consumer wired in
+      // this scene to re-borrow it.
+      expect((await altScene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.AVAILABLE);
+    });
+
+    it('publishes LoanReturned AFTER the copy has been marked available (load-bearing ordering for the consumer)', async () => {
+      // Post-commit consumers subscribing to LoanReturned must observe the
+      // fully-consistent cross-module state: the returned copy is already
+      // AVAILABLE when the event fires, so the consumer's subsequent
+      // `lending.borrow(...)` can succeed. This ordering is a deliberate
+      // deviation from the tx-staged pattern used by `borrow` — the event is
+      // published OUTSIDE `tx.run(...)` and AFTER `catalog.markCopyAvailable`.
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      scene.bus.clear();
+
+      let copyStatusSeenByHandler: CopyStatus | undefined;
+      scene.bus.subscribe('LoanReturned', async () => {
+        copyStatusSeenByHandler = (await scene.catalog.findCopy(copy.copyId)).status;
+      });
+
       await scene.facade.returnLoan(loan.loanId);
 
-      // then both events are emitted in the same transaction
-      expect(eventTypes(scene.bus).sort()).toEqual(['LoanReturned', 'ReservationFulfilled']);
+      expect(copyStatusSeenByHandler).toBe(CopyStatus.AVAILABLE);
     });
 
     it('throws LoanNotFoundError when returning an unknown loan, with no events', async () => {
@@ -352,84 +406,65 @@ describe('LendingFacade', () => {
     });
 
     it('does not count fulfilled reservations toward queuedCount (AC-1.5)', async () => {
-      // Setup: two reservations get fulfilled by borrowing+returning a copy
-      // (returnLoan fulfils the oldest pending reservation for that book).
-      // Then a third reservation is left pending, and a fresh active loan is
-      // opened on the same book. Expected queuedCount === 1.
+      // Setup: seed a shared InMemoryReservationRepository so the test can
+      // mark reservations fulfilled directly. Automatic fulfillment via
+      // returnLoan is gone (the AutoLoanOnReturnConsumer owns that path now
+      // and it is NOT wired into buildScene). Two reservations start pending
+      // and are then marked fulfilled by overwriting them through the repo;
+      // a third reservation stays pending; a fresh active loan is opened on
+      // the same book. Expected queuedCount === 1.
+      const reservations = new InMemoryReservationRepository();
+      const altScene = buildSceneWith({ reservationRepository: reservations });
       const isbn = '978-9999999001';
-      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
-      const copyA = await scene.catalog.registerCopy(
+      const book = await altScene.catalog.addBook(sampleNewBook({ isbn }));
+      const copyA = await altScene.catalog.registerCopy(
         book.bookId,
         sampleNewCopy({ bookId: book.bookId }),
       );
-      const copyB = await scene.catalog.registerCopy(
-        book.bookId,
-        sampleNewCopy({ bookId: book.bookId }),
-      );
-      const copyC = await scene.catalog.registerCopy(
-        book.bookId,
-        sampleNewCopy({ bookId: book.bookId }),
-      );
-      const alice = await scene.seedMember('Alice');
-      const bob = await scene.seedMember('Bob');
-      const carol = await scene.seedMember('Carol');
-      const dave = await scene.seedMember('Dave');
+      const alice = await altScene.seedMember('Alice');
+      const bob = await altScene.seedMember('Bob');
+      const carol = await altScene.seedMember('Carol');
+      const dave = await altScene.seedMember('Dave');
 
-      // Two reservations that will be fulfilled.
-      await scene.facade.reserve(bob.memberId, book.bookId);
-      await scene.facade.reserve(carol.memberId, book.bookId);
-
-      // First borrow-return cycle fulfils bob's reservation.
-      const loanA = await scene.facade.borrow(alice.memberId, copyA.copyId);
-      await scene.facade.returnLoan(loanA.loanId);
-
-      // Second borrow-return cycle fulfils carol's reservation.
-      const loanB = await scene.facade.borrow(alice.memberId, copyB.copyId);
-      await scene.facade.returnLoan(loanB.loanId);
+      // Two reservations that we will mark fulfilled directly.
+      const bobReservation = await altScene.facade.reserve(bob.memberId, book.bookId);
+      const carolReservation = await altScene.facade.reserve(carol.memberId, book.bookId);
+      await markReservationFulfilled(reservations, bobReservation, FIXED_NOW);
+      await markReservationFulfilled(reservations, carolReservation, FIXED_NOW);
 
       // A third reservation stays pending, and a fresh active loan is opened.
-      await scene.facade.reserve(dave.memberId, book.bookId);
-      const activeLoan = await scene.facade.borrow(alice.memberId, copyC.copyId);
+      await altScene.facade.reserve(dave.memberId, book.bookId);
+      const activeLoan = await altScene.facade.borrow(alice.memberId, copyA.copyId);
 
-      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+      const result = await altScene.facade.listActiveLoansWithQueuedReservations();
 
       expect(result).toEqual([{ loan: activeLoan, queuedCount: 1 }]);
     });
 
     it('reports queuedCount=0 when all reservations on the loan\'s book have been fulfilled', async () => {
+      const reservations = new InMemoryReservationRepository();
+      const altScene = buildSceneWith({ reservationRepository: reservations });
       const isbn = '978-9999999004';
-      const book = await scene.catalog.addBook(sampleNewBook({ isbn }));
-      const copyA = await scene.catalog.registerCopy(
+      const book = await altScene.catalog.addBook(sampleNewBook({ isbn }));
+      const copy = await altScene.catalog.registerCopy(
         book.bookId,
         sampleNewCopy({ bookId: book.bookId }),
       );
-      const copyB = await scene.catalog.registerCopy(
-        book.bookId,
-        sampleNewCopy({ bookId: book.bookId }),
-      );
-      const alice = await scene.seedMember('Alice');
-      const bob = await scene.seedMember('Bob');
-      const carol = await scene.seedMember('Carol');
-      const dave = await scene.seedMember('Dave');
+      const bob = await altScene.seedMember('Bob');
+      const carol = await altScene.seedMember('Carol');
+      const dave = await altScene.seedMember('Dave');
 
-      // Two reservations that will both be fulfilled.
-      await scene.facade.reserve(bob.memberId, book.bookId);
-      await scene.facade.reserve(carol.memberId, book.bookId);
-
-      // First borrow-return cycle fulfils bob's reservation.
-      const loanA1 = await scene.facade.borrow(alice.memberId, copyA.copyId);
-      await scene.facade.returnLoan(loanA1.loanId);
-
-      // Second borrow-return cycle fulfils carol's reservation. The book now
-      // has zero pending reservations and two fulfilled ones.
-      const loanA2 = await scene.facade.borrow(alice.memberId, copyA.copyId);
-      await scene.facade.returnLoan(loanA2.loanId);
+      // Two reservations that we mark fulfilled directly.
+      const bobReservation = await altScene.facade.reserve(bob.memberId, book.bookId);
+      const carolReservation = await altScene.facade.reserve(carol.memberId, book.bookId);
+      await markReservationFulfilled(reservations, bobReservation, FIXED_NOW);
+      await markReservationFulfilled(reservations, carolReservation, FIXED_NOW);
 
       // A fresh active loan is opened on the same book — no pending
       // reservations remain.
-      const activeLoan = await scene.facade.borrow(dave.memberId, copyB.copyId);
+      const activeLoan = await altScene.facade.borrow(dave.memberId, copy.copyId);
 
-      const result = await scene.facade.listActiveLoansWithQueuedReservations();
+      const result = await altScene.facade.listActiveLoansWithQueuedReservations();
 
       expect(result).toEqual([{ loan: activeLoan, queuedCount: 0 }]);
     });
@@ -742,47 +777,41 @@ describe('LendingFacade', () => {
 
   describe('atomicity', () => {
     // principle 5 extension: atomicity across functions
-    // The transactional context stages the loan save + the fulfillment-reservation
-    // save + the events, and only commits when the whole block resolves. If the
-    // fulfillment write throws, the loan save and events must also be discarded.
-    // Cross-module catalog calls live OUTSIDE the tx (principle 7 — cross-module
-    // consistency is via happens-before, not a shared transaction).
-    it('rolls back the loan save and emits no events when the reservation write fails mid-transaction', async () => {
-      const reservations = new ThrowingOnceReservationRepository();
-      const altScene = buildSceneWith({ reservationRepository: reservations });
+    // returnLoan's tx stages the loan save + the LoanReturned event, and only
+    // commits when both resolve. If the loan save throws, the event must also
+    // be discarded. Cross-module catalog calls live OUTSIDE the tx (principle
+    // 7 — cross-module consistency is via happens-before, not a shared
+    // transaction). The reservation write used to live inside this tx; it
+    // moved out with the AutoLoanOnReturnConsumer refactor, so the atomicity
+    // failure we now simulate is on the loan repository.
+    it('rolls back the loan save and emits no events when the loan write fails mid-transaction', async () => {
+      const loans = new ThrowingOnceLoanRepository();
+      const altScene = buildSceneWith({ loanRepository: loans });
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
-      const bob = await altScene.seedMember('Bob');
       const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
-      await altScene.facade.reserve(bob.memberId, copy.bookId);
       altScene.bus.clear();
 
-      reservations.armFailureOnNextSave(new Error('reservation store is down'));
+      loans.armFailureOnNextSave(new Error('loan store is down'));
 
-      await expect(altScene.facade.returnLoan(loan.loanId)).rejects.toThrow(
-        'reservation store is down',
-      );
+      await expect(altScene.facade.returnLoan(loan.loanId)).rejects.toThrow('loan store is down');
 
       const stored = (await altScene.facade.listLoansFor(alice.memberId))[0];
       expect(stored?.returnedAt).toBeUndefined();
       expect(altScene.bus.collected()).toEqual([]);
     });
 
-    it('rolls back both LoanReturned and ReservationFulfilled when the tx aborts', async () => {
-      const reservations = new ThrowingOnceReservationRepository();
-      const altScene = buildSceneWith({ reservationRepository: reservations });
+    it('rolls back the LoanReturned event when the tx aborts on a loan-save failure', async () => {
+      const loans = new ThrowingOnceLoanRepository();
+      const altScene = buildSceneWith({ loanRepository: loans });
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
-      const bob = await altScene.seedMember('Bob');
       const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
-      await altScene.facade.reserve(bob.memberId, copy.bookId);
       altScene.bus.clear();
 
-      reservations.armFailureOnNextSave(new Error('reservation store is down'));
+      loans.armFailureOnNextSave(new Error('loan store is down'));
 
-      await expect(altScene.facade.returnLoan(loan.loanId)).rejects.toThrow(
-        'reservation store is down',
-      );
+      await expect(altScene.facade.returnLoan(loan.loanId)).rejects.toThrow('loan store is down');
 
       expect(altScene.bus.collected()).toEqual([]);
       expect((await altScene.facade.listLoansFor(alice.memberId))[0]?.returnedAt).toBeUndefined();
@@ -883,7 +912,9 @@ class DroppingBookIdsCatalogFacade extends CatalogFacade {
 // Real InMemoryReservationRepository that throws on the next saveReservation
 // after being armed. This one we DO hand-roll, because it is Lending's OWN
 // repository (principle 5: in-memory doubles for your module's data, with
-// precise failure injection when needed).
+// precise failure injection when needed). Kept in place for the consumer spec
+// to use; the facade's atomicity tests no longer wire it (the reservation
+// write moved out of returnLoan's tx).
 class ThrowingOnceReservationRepository implements ReservationRepository {
   private readonly delegate = new InMemoryReservationRepository();
   private nextError: Error | null = null;
@@ -911,5 +942,49 @@ class ThrowingOnceReservationRepository implements ReservationRepository {
 
   listReservations(): Promise<ReservationDto[]> {
     return this.delegate.listReservations();
+  }
+}
+
+// Mirror of ThrowingOnceReservationRepository for the loan side. Wraps a real
+// InMemoryLoanRepository and throws on the next saveLoan after being armed.
+// The atomicity tests use this to prove returnLoan rolls back the staged loan
+// write AND the staged LoanReturned event when the save fails.
+class ThrowingOnceLoanRepository implements LoanRepository {
+  private readonly delegate = new InMemoryLoanRepository();
+  private nextError: Error | null = null;
+
+  armFailureOnNextSave(error: Error): void {
+    this.nextError = error;
+  }
+
+  saveLoan(loan: LoanDto, ctx: TransactionalContext): void {
+    if (this.nextError) {
+      const error = this.nextError;
+      this.nextError = null;
+      throw error;
+    }
+    this.delegate.saveLoan(loan, ctx);
+  }
+
+  findLoanById(loanId: string): Promise<LoanDto | undefined> {
+    return this.delegate.findLoanById(loanId);
+  }
+
+  listLoansForMember(memberId: string): Promise<LoanDto[]> {
+    return this.delegate.listLoansForMember(memberId);
+  }
+
+  listLoansForBook(bookId: BookId): Promise<LoanDto[]> {
+    return this.delegate.listLoansForBook(bookId);
+  }
+
+  listLoans(): Promise<LoanDto[]> {
+    return this.delegate.listLoans();
+  }
+
+  listActiveLoansWithQueuedReservations(): ReturnType<
+    LoanRepository['listActiveLoansWithQueuedReservations']
+  > {
+    return this.delegate.listActiveLoansWithQueuedReservations();
   }
 }

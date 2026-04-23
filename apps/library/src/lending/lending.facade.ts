@@ -21,12 +21,11 @@ import {
   type LoanReturned,
   type OverdueLoanReport,
   type ReservationDto,
-  type ReservationFulfilled,
   type ReservationQueued,
 } from './lending.types.js';
 import type { LoanRepository } from './loan.repository.js';
 import type { ReservationRepository } from './reservation.repository.js';
-import type { TransactionalContext, TransactionalContextFactory } from './transactional-context.js';
+import type { TransactionalContextFactory } from './transactional-context.js';
 
 type IdGenerator = () => string;
 type Clock = () => Date;
@@ -76,15 +75,16 @@ export class LendingFacade {
     const returned: LoanDto = { ...loan, returnedAt };
 
     const tx = this.txFactory();
-    // Atomicity target: the loan update + reservation fulfillment. If the
-    // reservation write fails, the loan update rolls back with it. Cross-module
-    // Catalog side-effects run AFTER commit (principle 7).
+    // Atomicity target: the loan update alone. Reservation-queue walking is
+    // the consumer's job now — see AutoLoanOnReturnConsumer. Cross-module
+    // Catalog side-effect runs AFTER commit (principle 7), and LoanReturned
+    // publishes AFTER the copy has been marked available so post-commit
+    // consumers observe the fully-consistent state.
     await tx.run(async () => {
       this.loans.saveLoan(returned, tx);
-      await this.fulfillNextReservation(returned.bookId, returnedAt, tx);
-      tx.stageEvent(this.loanReturnedEvent(returned));
     });
     await this.catalog.markCopyAvailable(returned.copyId);
+    await this.bus.publish(this.loanReturnedEvent(returned));
     return returned;
   }
 
@@ -151,21 +151,6 @@ export class LendingFacade {
     };
   }
 
-  private async fulfillNextReservation(
-    bookId: BookId,
-    fulfilledAt: Date,
-    tx: TransactionalContext,
-  ): Promise<void> {
-    const pending = await this.reservations.listPendingReservationsForBook(bookId);
-    const [next] = pending;
-    if (!next) {
-      return;
-    }
-    const fulfilled: ReservationDto = { ...next, fulfilledAt };
-    this.reservations.saveReservation(fulfilled, tx);
-    tx.stageEvent(this.reservationFulfilledEvent(fulfilled));
-  }
-
   private loanOpenedEvent(loan: LoanDto): LoanOpened {
     return {
       type: 'LoanOpened',
@@ -196,16 +181,6 @@ export class LendingFacade {
       memberId: reservation.memberId,
       bookId: reservation.bookId,
       reservedAt: reservation.reservedAt,
-    };
-  }
-
-  private reservationFulfilledEvent(reservation: ReservationDto): ReservationFulfilled {
-    return {
-      type: 'ReservationFulfilled',
-      reservationId: reservation.reservationId,
-      memberId: reservation.memberId,
-      bookId: reservation.bookId,
-      fulfilledAt: reservation.fulfilledAt as Date,
     };
   }
 }

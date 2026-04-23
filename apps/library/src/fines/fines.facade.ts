@@ -45,7 +45,7 @@ export class FinesFacade {
       }
       const fine = this.buildFine(loan, now);
       await this.repository.saveFine(fine);
-      this.bus.publish(this.fineAssessedEvent(fine));
+      await this.bus.publish(this.fineAssessedEvent(fine));
       assessed.push(fine);
     }
 
@@ -99,7 +99,7 @@ export class FinesFacade {
     }
 
     await this.membership.suspend(memberId);
-    this.bus.publish(this.memberAutoSuspendedEvent(memberId, totalUnpaidCents, now));
+    await this.bus.publish(this.memberAutoSuspendedEvent(memberId, totalUnpaidCents, now));
   }
 
   private async computeUnpaidTotal(memberId: MemberId): Promise<number> {
