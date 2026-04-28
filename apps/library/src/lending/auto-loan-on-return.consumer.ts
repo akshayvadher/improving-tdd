@@ -161,7 +161,7 @@ export function createAutoLoanOnReturnConsumer(
     const claimed = await claimReservation(reservation);
     let loan: LoanDto;
     try {
-      loan = await deps.lending.borrow(reservation.memberId, copyId);
+      loan = await deps.lending.borrow({ memberId: reservation.memberId, role: 'MEMBER' }, copyId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await tryUnfulfillClaim(claimed);

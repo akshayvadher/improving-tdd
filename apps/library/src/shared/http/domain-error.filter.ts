@@ -5,6 +5,7 @@ interface ExpressLikeResponse {
   json(body: unknown): ExpressLikeResponse;
 }
 
+import { UnauthorizedRoleError } from '../../access-control/index.js';
 import {
   BookNotFoundError,
   CopyNotFoundError,
@@ -64,6 +65,10 @@ const INVALID_REQUEST_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
   InvalidCategoriesQueryError,
 ];
 
+const UNAUTHORIZED_ROLE_ERRORS: ReadonlyArray<new (...args: never[]) => Error> = [
+  UnauthorizedRoleError,
+];
+
 @Catch(Error)
 export class DomainErrorFilter implements ExceptionFilter {
   catch(error: Error, host: ArgumentsHost): void {
@@ -87,6 +92,9 @@ function statusFor(error: Error): number {
   }
   if (isInstanceOfAny(error, INVALID_REQUEST_ERRORS)) {
     return HttpStatus.BAD_REQUEST;
+  }
+  if (isInstanceOfAny(error, UNAUTHORIZED_ROLE_ERRORS)) {
+    return HttpStatus.FORBIDDEN;
   }
   // Nest's own HttpException still carries a status; preserve it when present.
   const status = (error as { status?: unknown }).status;

@@ -118,7 +118,7 @@ export function buildScene(overrides: SceneOverrides = {}): Scene {
         return catalog.registerCopy(book.bookId, sampleNewCopy({ bookId: book.bookId }));
       })();
       borrowClock = new Date(FIXED_NOW.getTime() - (LOAN_DURATION_DAYS + daysOverdue) * MS_PER_DAY);
-      return lending.borrow(memberId, copy.copyId);
+      return lending.borrow({ memberId, role: 'MEMBER' }, copy.copyId);
     },
   };
 }

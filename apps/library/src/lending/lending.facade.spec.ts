@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { UnauthorizedRoleError } from '../access-control/index.js';
+import { sampleAuthUser } from '../access-control/sample-access-control-data.js';
 import { CatalogFacade } from '../catalog/catalog.facade.js';
 import { createCatalogFacade } from '../catalog/catalog.configuration.js';
 import { InMemoryCatalogRepository } from '../catalog/in-memory-catalog.repository.js';
@@ -26,7 +28,11 @@ import type { LoanDto, ReservationDto } from './lending.types.js';
 import type { LoanRepository } from './loan.repository.js';
 import type { ReservationRepository } from './reservation.repository.js';
 import type { TransactionalContext } from './transactional-context.js';
-import { CopyUnavailableError, LoanNotFoundError, MemberIneligibleError } from './lending.types.js';
+import {
+  CopyUnavailableError,
+  LoanNotFoundError,
+  MemberIneligibleError,
+} from './lending.types.js';
 import { sampleBorrowRequest, sampleReserveRequest } from './sample-lending-data.js';
 
 function sequentialIds(prefix: string): () => string {
@@ -135,7 +141,7 @@ describe('LendingFacade', () => {
       });
 
       // when the member borrows the copy
-      const loan = await scene.facade.borrow(memberId, copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId }), copyId);
 
       // then the loan is persisted with the right owner and copy
       expect(loan.memberId).toBe(alice.memberId);
@@ -152,7 +158,7 @@ describe('LendingFacade', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
 
-      await scene.facade.borrow(alice.memberId, copy.copyId);
+      await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
 
       // then the real catalog reflects the copy as unavailable
       expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.UNAVAILABLE);
@@ -165,7 +171,7 @@ describe('LendingFacade', () => {
       await scene.membership.suspend(alice.memberId);
 
       // when the member tries to borrow
-      await expect(scene.facade.borrow(alice.memberId, copy.copyId)).rejects.toBeInstanceOf(
+      await expect(scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId)).rejects.toBeInstanceOf(
         MemberIneligibleError,
       );
 
@@ -175,16 +181,70 @@ describe('LendingFacade', () => {
       expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.AVAILABLE);
     });
 
+    it('opens a loan when the AuthUser role is MEMBER (AC-1)', async () => {
+      // given an available copy and a registered member acting as MEMBER
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+
+      // when the member borrows the copy with role MEMBER explicit on the AuthUser
+      const loan = await scene.facade.borrow(
+        sampleAuthUser({ memberId: alice.memberId, role: 'MEMBER' }),
+        copy.copyId,
+      );
+
+      // then the borrow contract holds — loan recorded, event emitted, copy now UNAVAILABLE
+      expect(await scene.facade.listLoansFor(alice.memberId)).toEqual([loan]);
+      expect(eventTypes(scene.bus)).toEqual(['LoanOpened']);
+      expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.UNAVAILABLE);
+    });
+
+    it('rejects with UnauthorizedRoleError when the AuthUser role is ACCOUNT, touching nothing (AC-2)', async () => {
+      // given an available copy and a registered member acting as ACCOUNT
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+
+      // when an ACCOUNT-role caller tries to borrow
+      await expect(
+        scene.facade.borrow(
+          sampleAuthUser({ memberId: alice.memberId, role: 'ACCOUNT' }),
+          copy.copyId,
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedRoleError);
+
+      // then no loan was recorded, no event emitted, and the copy is still available
+      expect(await scene.facade.listLoansFor(alice.memberId)).toEqual([]);
+      expect(scene.bus.collected()).toEqual([]);
+      expect((await scene.catalog.findCopy(copy.copyId)).status).toBe(CopyStatus.AVAILABLE);
+    });
+
+    it('throws UnauthorizedRoleError BEFORE MemberIneligibleError when both apply (AC-3)', async () => {
+      // given a suspended member who is ALSO calling with role ACCOUNT —
+      // both the role guard and the eligibility guard would reject. The role
+      // check runs first (fail-fast: authorization precedes business eligibility).
+      const copy = await scene.seedAvailableCopy();
+      const alice = await scene.seedMember('Alice');
+      await scene.membership.suspend(alice.memberId);
+
+      // when the suspended ACCOUNT-role caller tries to borrow
+      // then the thrown error is UnauthorizedRoleError, NOT MemberIneligibleError
+      await expect(
+        scene.facade.borrow(
+          sampleAuthUser({ memberId: alice.memberId, role: 'ACCOUNT' }),
+          copy.copyId,
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedRoleError);
+    });
+
     it('rejects with CopyUnavailableError when the copy is already checked out', async () => {
       // given a copy that has been borrowed by someone else
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      await scene.facade.borrow(alice.memberId, copy.copyId);
+      await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       scene.bus.clear();
 
       // when bob tries to borrow it
-      await expect(scene.facade.borrow(bob.memberId, copy.copyId)).rejects.toBeInstanceOf(
+      await expect(scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copy.copyId)).rejects.toBeInstanceOf(
         CopyUnavailableError,
       );
 
@@ -198,7 +258,7 @@ describe('LendingFacade', () => {
     it('closes the loan with returnedAt and emits a LoanReturned event', async () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       scene.bus.clear();
 
       const returned = await scene.facade.returnLoan(loan.loanId);
@@ -211,7 +271,7 @@ describe('LendingFacade', () => {
     it('marks the copy available in the catalog on return', async () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
 
       await scene.facade.returnLoan(loan.loanId);
 
@@ -225,7 +285,7 @@ describe('LendingFacade', () => {
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
       const bob = await altScene.seedMember('Bob');
-      const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await altScene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       const bobReservation = await altScene.facade.reserve(bob.memberId, copy.bookId);
       altScene.bus.clear();
 
@@ -258,7 +318,7 @@ describe('LendingFacade', () => {
       // published OUTSIDE `tx.run(...)` and AFTER `catalog.markCopyAvailable`.
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       scene.bus.clear();
 
       let copyStatusSeenByHandler: CopyStatus | undefined;
@@ -315,8 +375,8 @@ describe('LendingFacade', () => {
       const copyTwo = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const first = await scene.facade.borrow(alice.memberId, copyOne.copyId);
-      const second = await scene.facade.borrow(bob.memberId, copyTwo.copyId);
+      const first = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyOne.copyId);
+      const second = await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyTwo.copyId);
 
       const wayLater = new Date(first.dueDate.getTime() + 24 * 60 * 60 * 1000);
       const overdue = await scene.facade.listOverdueLoans(wayLater);
@@ -330,8 +390,8 @@ describe('LendingFacade', () => {
       const copyTwo = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const returned = await scene.facade.borrow(alice.memberId, copyOne.copyId);
-      await scene.facade.borrow(bob.memberId, copyTwo.copyId);
+      const returned = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyOne.copyId);
+      await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyTwo.copyId);
       await scene.facade.returnLoan(returned.loanId);
 
       const beforeDue = new Date(FIXED_NOW.getTime() + 60 * 60 * 1000);
@@ -348,9 +408,9 @@ describe('LendingFacade', () => {
       const copyThree = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const first = await scene.facade.borrow(alice.memberId, copyOne.copyId);
-      const second = await scene.facade.borrow(alice.memberId, copyTwo.copyId);
-      await scene.facade.borrow(bob.memberId, copyThree.copyId);
+      const first = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyOne.copyId);
+      const second = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyTwo.copyId);
+      await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyThree.copyId);
 
       const alicesLoans = await scene.facade.listLoansFor(alice.memberId);
 
@@ -372,7 +432,7 @@ describe('LendingFacade', () => {
     it('reports queuedCount=0 for an active loan whose book has no reservations (AC-1.2)', async () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
 
       const result = await scene.facade.listActiveLoansWithQueuedReservations();
 
@@ -383,7 +443,7 @@ describe('LendingFacade', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.facade.reserve(bob.memberId, copy.bookId);
 
       const result = await scene.facade.listActiveLoansWithQueuedReservations();
@@ -397,7 +457,7 @@ describe('LendingFacade', () => {
       const bob = await scene.seedMember('Bob');
       const carol = await scene.seedMember('Carol');
       const dave = await scene.seedMember('Dave');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.facade.reserve(bob.memberId, copy.bookId);
       await scene.facade.reserve(carol.memberId, copy.bookId);
       await scene.facade.reserve(dave.memberId, copy.bookId);
@@ -436,7 +496,7 @@ describe('LendingFacade', () => {
 
       // A third reservation stays pending, and a fresh active loan is opened.
       await altScene.facade.reserve(dave.memberId, book.bookId);
-      const activeLoan = await altScene.facade.borrow(alice.memberId, copyA.copyId);
+      const activeLoan = await altScene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
 
       const result = await altScene.facade.listActiveLoansWithQueuedReservations();
 
@@ -464,7 +524,7 @@ describe('LendingFacade', () => {
 
       // A fresh active loan is opened on the same book — no pending
       // reservations remain.
-      const activeLoan = await altScene.facade.borrow(dave.memberId, copy.copyId);
+      const activeLoan = await altScene.facade.borrow(sampleAuthUser({ memberId: dave.memberId }), copy.copyId);
 
       const result = await altScene.facade.listActiveLoansWithQueuedReservations();
 
@@ -487,9 +547,9 @@ describe('LendingFacade', () => {
       const carol = await scene.seedMember('Carol');
 
       // Loan that will be returned.
-      const returnedLoan = await scene.facade.borrow(alice.memberId, copyA.copyId);
+      const returnedLoan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
       // Loan that stays active.
-      const activeLoan = await scene.facade.borrow(bob.memberId, copyB.copyId);
+      const activeLoan = await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyB.copyId);
       // Reserve AFTER the returned loan is already borrowed, so the return
       // leaves it pending (return fulfils the oldest pending reservation,
       // which here is carol's — but there are two reservations queued before
@@ -511,8 +571,8 @@ describe('LendingFacade', () => {
       const carol = await scene.seedMember('Carol');
       const dave = await scene.seedMember('Dave');
 
-      const loanOne = await scene.facade.borrow(alice.memberId, copyOne.copyId);
-      const loanTwo = await scene.facade.borrow(bob.memberId, copyTwo.copyId);
+      const loanOne = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyOne.copyId);
+      const loanTwo = await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyTwo.copyId);
 
       // Two pending reservations on book one, zero on book two.
       await scene.facade.reserve(carol.memberId, copyOne.bookId);
@@ -541,8 +601,8 @@ describe('LendingFacade', () => {
       const bob = await scene.seedMember('Bob');
       const carol = await scene.seedMember('Carol');
 
-      const loanA = await scene.facade.borrow(alice.memberId, copyA.copyId);
-      const loanB = await scene.facade.borrow(bob.memberId, copyB.copyId);
+      const loanA = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
+      const loanB = await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyB.copyId);
       await scene.facade.reserve(carol.memberId, book.bookId);
 
       const result = await scene.facade.listActiveLoansWithQueuedReservations();
@@ -598,7 +658,7 @@ describe('LendingFacade', () => {
         sampleNewCopy({ bookId: book.bookId }),
       );
       const alice = await scene.seedMember('Alice');
-      const loan = await scene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
 
       // when the clock is advanced past the due date
       const wayLater = new Date(loan.dueDate.getTime() + 24 * 60 * 60 * 1000);
@@ -634,9 +694,9 @@ describe('LendingFacade', () => {
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
       const carol = await scene.seedMember('Carol');
-      const loanA = await scene.facade.borrow(alice.memberId, copyA.copyId);
-      const loanB = await scene.facade.borrow(bob.memberId, copyB.copyId);
-      const loanC = await scene.facade.borrow(carol.memberId, copyC.copyId);
+      const loanA = await scene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
+      const loanB = await scene.facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyB.copyId);
+      const loanC = await scene.facade.borrow(sampleAuthUser({ memberId: carol.memberId }), copyC.copyId);
 
       const wayLater = new Date(loanA.dueDate.getTime() + 24 * 60 * 60 * 1000);
       const reports = await scene.facade.listOverdueLoansWithTitles(wayLater);
@@ -706,9 +766,9 @@ describe('LendingFacade', () => {
       const carol = await membership.registerMember(
         sampleNewMember({ name: 'Carol', email: 'carol@example.com' }),
       );
-      const loanA1 = await facade.borrow(alice.memberId, copyA1.copyId);
-      const loanA2 = await facade.borrow(bob.memberId, copyA2.copyId);
-      const loanB = await facade.borrow(carol.memberId, copyB.copyId);
+      const loanA1 = await facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA1.copyId);
+      const loanA2 = await facade.borrow(sampleAuthUser({ memberId: bob.memberId }), copyA2.copyId);
+      const loanB = await facade.borrow(sampleAuthUser({ memberId: carol.memberId }), copyB.copyId);
 
       const wayLater = new Date(loanA1.dueDate.getTime() + 24 * 60 * 60 * 1000);
       const reports = await facade.listOverdueLoansWithTitles(wayLater);
@@ -764,7 +824,7 @@ describe('LendingFacade', () => {
       const alice = await membership.registerMember(
         sampleNewMember({ name: 'Alice', email: 'alice-drift@example.com' }),
       );
-      const loan = await facade.borrow(alice.memberId, copy.copyId);
+      const loan = await facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
 
       // when the clock is advanced past the due date and the composition runs
       const wayLater = new Date(loan.dueDate.getTime() + 24 * 60 * 60 * 1000);
@@ -789,7 +849,7 @@ describe('LendingFacade', () => {
       const altScene = buildSceneWith({ loanRepository: loans });
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
-      const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await altScene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       altScene.bus.clear();
 
       loans.armFailureOnNextSave(new Error('loan store is down'));
@@ -806,7 +866,7 @@ describe('LendingFacade', () => {
       const altScene = buildSceneWith({ loanRepository: loans });
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
-      const loan = await altScene.facade.borrow(alice.memberId, copy.copyId);
+      const loan = await altScene.facade.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       altScene.bus.clear();
 
       loans.armFailureOnNextSave(new Error('loan store is down'));

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { sampleAuthUser } from '../access-control/sample-access-control-data.js';
 import { CopyStatus, type CatalogFacade, type CopyDto, type CopyId } from '../catalog/index.js';
 import type { EligibilityDto, MemberId, MembershipFacade } from '../membership/index.js';
 import { InMemoryEventBus } from '../shared/events/in-memory-event-bus.js';
@@ -143,7 +144,7 @@ describe('reservation queue DSL', () => {
     // given alice has borrowed a copy and two other members are waiting in line
     const book = 'refactoring';
     const copy = scene.seedAvailableCopy(book);
-    const aliceLoan = await scene.facade.borrow('alice', copy.copyId);
+    const aliceLoan = await scene.facade.borrow(sampleAuthUser({ memberId: 'alice' }), copy.copyId);
     const { dsl } = scene;
     await dsl.after('bob').reserves(book);
     await dsl.after('carol').reserves(book);

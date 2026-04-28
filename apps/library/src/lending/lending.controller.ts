@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
 
+import { lookupAuthUser } from '../access-control/index.js';
 import type { BookId, CopyId } from '../catalog/index.js';
 import type { MemberId } from '../membership/index.js';
 import { LendingFacade } from './lending.facade.js';
@@ -27,7 +28,8 @@ export class LendingController {
 
   @Post('loans')
   borrow(@Body() body: BorrowBody): Promise<LoanDto> {
-    return this.facade.borrow(body.memberId, body.copyId);
+    const authUser = lookupAuthUser(body.memberId);
+    return this.facade.borrow(authUser, body.copyId);
   }
 
   @Patch('loans/:loanId/return')

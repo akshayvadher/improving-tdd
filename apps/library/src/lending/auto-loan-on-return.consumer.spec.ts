@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { sampleAuthUser } from '../access-control/sample-access-control-data.js';
 import { createCatalogFacade } from '../catalog/catalog.configuration.js';
 import type { BookId } from '../catalog/index.js';
 import { CopyStatus } from '../catalog/index.js';
@@ -120,7 +121,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -153,7 +154,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
 
       await scene.lending.returnLoan(aliceLoan.loanId);
@@ -169,7 +170,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       // given alice has a loan and no reservations exist
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       scene.bus.clear();
 
       // when alice returns the loan
@@ -193,7 +194,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const alice = await scene.seedMember('Alice');
       const suspended = await scene.seedMember('Suspended');
       const eligible = await scene.seedMember('Eligible');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(suspended.memberId, copy.bookId);
       await scene.lending.reserve(eligible.memberId, copy.bookId);
       await scene.membership.suspend(suspended.memberId);
@@ -244,7 +245,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const suspendedTwo = await scene.seedMember('SuspendedTwo');
       const firstEligible = await scene.seedMember('FirstEligible');
       const secondEligible = await scene.seedMember('SecondEligible');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(suspendedOne.memberId, copy.bookId);
       await scene.lending.reserve(suspendedTwo.memberId, copy.bookId);
       await scene.lending.reserve(firstEligible.memberId, copy.bookId);
@@ -284,7 +285,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const alice = await scene.seedMember('Alice');
       const suspendedOne = await scene.seedMember('SuspendedOne');
       const suspendedTwo = await scene.seedMember('SuspendedTwo');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(suspendedOne.memberId, copy.bookId);
       await scene.lending.reserve(suspendedTwo.memberId, copy.bookId);
       await scene.membership.suspend(suspendedOne.memberId);
@@ -316,7 +317,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const suspended = await scene.seedMember('Suspended');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(suspended.memberId, copy.bookId);
       await scene.membership.suspend(suspended.memberId);
       scene.bus.clear();
@@ -344,7 +345,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -361,7 +362,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -379,7 +380,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       const bobReservation = await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -422,7 +423,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
       const bob = await altScene.seedMember('Bob');
-      const aliceLoan = await altScene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await altScene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await altScene.lending.reserve(bob.memberId, copy.bookId);
       altScene.bus.clear();
 
@@ -500,7 +501,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const bob = await membership.registerMember(
         sampleNewMember({ name: 'Bob', email: 'bob-9@lib.test' }),
       );
-      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await lending.reserve(bob.memberId, book.bookId);
       bus.clear();
 
@@ -552,8 +553,8 @@ describe('AutoLoanOnReturnConsumer', () => {
       const carol = await scene.seedMember('Carol');
       const m1 = await scene.seedMember('M1');
       const m2 = await scene.seedMember('M2');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copyA.copyId);
-      const carolLoan = await scene.lending.borrow(carol.memberId, copyB.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
+      const carolLoan = await scene.lending.borrow(sampleAuthUser({ memberId: carol.memberId }), copyB.copyId);
       const r1 = await scene.lending.reserve(m1.memberId, book.bookId);
       const r2 = await scene.lending.reserve(m2.memberId, book.bookId);
       scene.bus.clear();
@@ -613,7 +614,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -681,7 +682,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const bob = await membership.registerMember(
         sampleNewMember({ name: 'Bob', email: 'bob-order@lib.test' }),
       );
-      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       const bobReservation = await lending.reserve(bob.memberId, book.bookId);
 
       // Reset the snapshot ledger so only the consumer-driven borrow is observed.
@@ -716,7 +717,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
       const bob = await altScene.seedMember('Bob');
-      const aliceLoan = await altScene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await altScene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       const bobReservation = await altScene.lending.reserve(bob.memberId, copy.bookId);
       altScene.bus.clear();
 
@@ -743,7 +744,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await altScene.seedAvailableCopy();
       const alice = await altScene.seedMember('Alice');
       const bob = await altScene.seedMember('Bob');
-      const aliceLoan = await altScene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await altScene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       const bobReservation = await altScene.lending.reserve(bob.memberId, copy.bookId);
 
       let fulfilledAtOnFailurePublish: Date | undefined = new Date('9999-01-01');
@@ -811,7 +812,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const bob = await membership.registerMember(
         sampleNewMember({ name: 'Bob', email: 'bob-tx-1@lib.test' }),
       );
-      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await lending.reserve(bob.memberId, book.bookId);
       bus.clear();
 
@@ -884,7 +885,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const bob = await membership.registerMember(
         sampleNewMember({ name: 'Bob', email: 'bob-tx-2@lib.test' }),
       );
-      const aliceLoan = await lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await lending.reserve(bob.memberId, book.bookId);
       bus.clear();
 
@@ -918,7 +919,7 @@ describe('AutoLoanOnReturnConsumer', () => {
       const copy = await scene.seedAvailableCopy();
       const alice = await scene.seedMember('Alice');
       const bob = await scene.seedMember('Bob');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copy.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copy.copyId);
       await scene.lending.reserve(bob.memberId, copy.bookId);
       scene.bus.clear();
 
@@ -956,8 +957,8 @@ describe('AutoLoanOnReturnConsumer', () => {
       const carol = await scene.seedMember('Carol');
       const m1 = await scene.seedMember('M1');
       const m2 = await scene.seedMember('M2');
-      const aliceLoan = await scene.lending.borrow(alice.memberId, copyA.copyId);
-      const carolLoan = await scene.lending.borrow(carol.memberId, copyB.copyId);
+      const aliceLoan = await scene.lending.borrow(sampleAuthUser({ memberId: alice.memberId }), copyA.copyId);
+      const carolLoan = await scene.lending.borrow(sampleAuthUser({ memberId: carol.memberId }), copyB.copyId);
       await scene.lending.reserve(m1.memberId, book.bookId);
       await scene.lending.reserve(m2.memberId, book.bookId);
 

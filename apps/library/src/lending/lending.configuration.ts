@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
+import type { AccessControlFacade } from '../access-control/index.js';
+import { createAccessControlFacade } from '../access-control/access-control.configuration.js';
 import type { BookId, CatalogFacade } from '../catalog/index.js';
 import type { MembershipFacade } from '../membership/index.js';
 import type { EventBus } from '../shared/events/event-bus.js';
@@ -15,6 +17,7 @@ import type { TransactionalContextFactory } from './transactional-context.js';
 export interface LendingOverrides {
   catalogFacade: CatalogFacade;
   membershipFacade: MembershipFacade;
+  accessControlFacade?: AccessControlFacade;
   loanRepository?: LoanRepository;
   reservationRepository?: ReservationRepository;
   eventBus?: EventBus;
@@ -33,12 +36,14 @@ export function createLendingFacade(overrides: LendingOverrides): LendingFacade 
   const loanRepository = overrides.loanRepository ?? new InMemoryLoanRepository(reservationView);
   const eventBus = overrides.eventBus ?? new InMemoryEventBus();
   const txFactory = overrides.txFactory ?? (() => new InMemoryTransactionalContext(eventBus));
+  const accessControlFacade = overrides.accessControlFacade ?? createAccessControlFacade();
   const newId = overrides.newId ?? randomUUID;
   const clock = overrides.clock ?? (() => new Date());
 
   return new LendingFacade(
     overrides.catalogFacade,
     overrides.membershipFacade,
+    accessControlFacade,
     loanRepository,
     reservationRepository,
     eventBus,

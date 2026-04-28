@@ -1,5 +1,6 @@
 import { Inject, Module, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 
+import { AccessControlFacade, AccessControlModule } from '../access-control/index.js';
 import { CatalogFacade, CatalogModule } from '../catalog/index.js';
 import type { AppDatabase } from '../db/client.js';
 import { DATABASE, DatabaseModule } from '../db/database.module.js';
@@ -25,7 +26,7 @@ const TRANSACTIONAL_CONTEXT_FACTORY = Symbol('TransactionalContextFactory');
 const AUTO_LOAN_CONSUMER = Symbol('AutoLoanOnReturnConsumer');
 
 @Module({
-  imports: [CatalogModule, MembershipModule, DatabaseModule],
+  imports: [AccessControlModule, CatalogModule, MembershipModule, DatabaseModule],
   controllers: [LendingController],
   providers: [
     {
@@ -53,14 +54,17 @@ const AUTO_LOAN_CONSUMER = Symbol('AutoLoanOnReturnConsumer');
       useFactory: (
         catalog: CatalogFacade,
         membership: MembershipFacade,
+        accessControl: AccessControlFacade,
         loans: DrizzleLoanRepository,
         reservations: DrizzleReservationRepository,
         bus: InMemoryEventBus,
         txFactory: () => DrizzleTransactionalContext,
-      ) => new LendingFacade(catalog, membership, loans, reservations, bus, txFactory),
+      ) =>
+        new LendingFacade(catalog, membership, accessControl, loans, reservations, bus, txFactory),
       inject: [
         CatalogFacade,
         MembershipFacade,
+        AccessControlFacade,
         LOAN_REPOSITORY,
         RESERVATION_REPOSITORY,
         EVENT_BUS,

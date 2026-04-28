@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
+import { AccessControlFacade, type AuthUser } from '../access-control/index.js';
 import {
   BookNotFoundError,
   CatalogFacade,
@@ -37,6 +38,7 @@ export class LendingFacade {
   constructor(
     private readonly catalog: CatalogFacade,
     private readonly membership: MembershipFacade,
+    private readonly accessControl: AccessControlFacade,
     private readonly loans: LoanRepository,
     private readonly reservations: ReservationRepository,
     private readonly bus: EventBus,
@@ -45,14 +47,15 @@ export class LendingFacade {
     private readonly clock: Clock = () => new Date(),
   ) {}
 
-  async borrow(memberId: MemberId, copyId: CopyId): Promise<LoanDto> {
-    await this.requireEligible(memberId);
+  async borrow(authUser: AuthUser, copyId: CopyId): Promise<LoanDto> {
+    this.accessControl.authorize(authUser, 'lending', 'borrow');
+    await this.requireEligible(authUser.memberId);
     const copy = await this.catalog.findCopy(copyId);
     if (copy.status !== CopyStatus.AVAILABLE) {
       throw new CopyUnavailableError(copyId);
     }
 
-    const loan = this.buildLoan(memberId, copy.copyId, copy.bookId);
+    const loan = this.buildLoan(authUser.memberId, copy.copyId, copy.bookId);
     const tx = this.txFactory();
     // Lending's tx wraps ONLY Lending's own writes (principle 7: cross-module
     // consistency via events/happens-before, not shared transactions). If the
