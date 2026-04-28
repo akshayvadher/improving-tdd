@@ -17,6 +17,11 @@ export interface NewBookDto {
   isbn: Isbn;
 }
 
+export interface UpdateBookDto {
+  title?: string;
+  authors?: string[];
+}
+
 export interface BookDto {
   bookId: BookId;
   title: string;

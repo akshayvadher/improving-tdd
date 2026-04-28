@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import type { BookCacheGateway } from '../shared/book-cache-gateway/book-cache-gateway.js';
+import { InMemoryBookCacheGateway } from '../shared/book-cache-gateway/in-memory-book-cache-gateway.js';
 import type { BookMetadata } from '../shared/isbn-gateway/book-metadata.js';
 import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
 import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
@@ -12,8 +14,15 @@ import {
   DuplicateIsbnError,
   InvalidBookError,
   InvalidCopyError,
+  type BookDto,
+  type Isbn,
 } from './catalog.types.js';
-import { sampleNewBook, sampleNewBookWithIsbn, sampleNewCopy } from './sample-catalog-data.js';
+import {
+  sampleNewBook,
+  sampleNewBookWithIsbn,
+  sampleNewCopy,
+  sampleUpdateBook,
+} from './sample-catalog-data.js';
 
 // Deterministic id generator so copy/book ids are predictable in assertions.
 function sequentialIds(prefix = 'id'): () => string {
@@ -548,6 +557,482 @@ describe('addBook — gateway failures', () => {
   });
 });
 
+describe('findBook — cache read-through', () => {
+  function buildScene() {
+    const cache = new InMemoryBookCacheGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+    });
+    return { cache, facade };
+  }
+
+  it('returns the cached BookDto on a cache hit without consulting the repository (AC-2.1)', async () => {
+    // given a cache pre-seeded with a BookDto for an ISBN, and an empty repo
+    const { cache, facade } = buildScene();
+    const seeded: BookDto = {
+      bookId: 'book-seeded',
+      title: 'Seeded From Cache',
+      authors: ['Cache Author'],
+      isbn: '978-0134685991',
+    };
+    await cache.set('978-0134685991', seeded);
+
+    // when findBook is called with that ISBN
+    const found = await facade.findBook('978-0134685991');
+
+    // then the seeded book is returned even though the repo has no record of it
+    expect(found).toEqual(seeded);
+  });
+
+  it('on cache MISS / repo HIT, returns the repo book and populates the cache (AC-2.2)', async () => {
+    // given a book added via the facade (repo populated, cache untouched by addBook)
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    expect(await cache.get('978-0134685991')).toBeNull();
+
+    // when findBook is called for that ISBN
+    const found = await facade.findBook('978-0134685991');
+
+    // then the repo's book is returned AND the cache now holds that entry
+    expect(found).toEqual(added);
+    expect(await cache.get('978-0134685991')).toEqual(added);
+  });
+
+  it('on cache MISS / repo MISS, throws BookNotFoundError and does NOT cache the negative answer (AC-2.3)', async () => {
+    // given an empty catalog (cache and repo both empty for the unknown ISBN)
+    const { cache, facade } = buildScene();
+
+    // when findBook is called for an unknown ISBN, then it throws
+    await expect(facade.findBook('978-0000000000')).rejects.toThrow(BookNotFoundError);
+
+    // and the cache still has no entry for that ISBN (no negative caching)
+    expect(await cache.get('978-0000000000')).toBeNull();
+  });
+
+  it('addBook does NOT populate the cache (AC-2.4)', async () => {
+    // given an empty cache
+    const { cache, facade } = buildScene();
+
+    // when a book is added via the facade
+    await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // then the cache remains empty for that ISBN — only findBook populates it
+    expect(await cache.get('978-0134685991')).toBeNull();
+  });
+
+  it('two consecutive findBook calls after a fresh add: first repo→populate, second cache HIT (AC-2.5)', async () => {
+    // given a freshly added book with an empty cache
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    expect(await cache.get('978-0134685991')).toBeNull();
+
+    // when the first findBook fires (cache miss → repo hit → populate)
+    const first = await facade.findBook('978-0134685991');
+
+    // then the cache is now populated with the book
+    expect(first).toEqual(added);
+    expect(await cache.get('978-0134685991')).toEqual(added);
+
+    // and when a second findBook fires, it returns the cached book again
+    const second = await facade.findBook('978-0134685991');
+    expect(second).toEqual(added);
+  });
+
+  it('createCatalogFacade uses the supplied bookCacheGateway override and falls back to a fresh default when omitted (AC-2.6)', async () => {
+    // given an explicit cache override seeded with a BookDto
+    const overrideCache = new InMemoryBookCacheGateway();
+    const seeded: BookDto = {
+      bookId: 'book-override',
+      title: 'Override Hit',
+      authors: ['Override Author'],
+      isbn: '978-0134685991',
+    };
+    await overrideCache.set('978-0134685991', seeded);
+    const facadeWithOverride = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: overrideCache,
+    });
+
+    // when findBook is called, then the override is the cache the facade consults
+    expect(await facadeWithOverride.findBook('978-0134685991')).toEqual(seeded);
+
+    // and given a facade built WITHOUT a bookCacheGateway override
+    const facadeWithDefault = createCatalogFacade({ newId: sequentialIds('book') });
+
+    // when findBook is called for an unknown ISBN with the default cache
+    // then it throws BookNotFoundError (the default cache is a fresh empty InMemoryBookCacheGateway)
+    await expect(facadeWithDefault.findBook('978-0000000000')).rejects.toThrow(BookNotFoundError);
+  });
+
+  it('findBook throws the BookNotFoundError class on a miss (AC-2.7)', async () => {
+    // given an empty catalog
+    const { facade } = buildScene();
+
+    // when / then findBook for an unknown ISBN throws BookNotFoundError (same class as today)
+    await expect(facade.findBook('978-0000000000')).rejects.toThrow(BookNotFoundError);
+  });
+});
+
+describe('updateBook', () => {
+  function buildScene() {
+    const cache = new InMemoryBookCacheGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+    });
+    return { cache, facade };
+  }
+
+  it('updates only the title and preserves authors, bookId, and isbn (AC-3.1)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when updateBook is called with a title-only patch
+    const updated = await facade.updateBook(added.bookId, { title: 'New Title' });
+
+    // then the returned DTO has the new title and the original authors, bookId, isbn
+    expect(updated).toEqual({
+      bookId: added.bookId,
+      title: 'New Title',
+      authors: added.authors,
+      isbn: added.isbn,
+    });
+  });
+
+  it('updates only the authors and preserves title, bookId, and isbn (AC-3.2)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when updateBook is called with an authors-only patch
+    const updated = await facade.updateBook(added.bookId, {
+      authors: ['New Author A', 'New Author B'],
+    });
+
+    // then the returned DTO has the new authors and the original title, bookId, isbn
+    expect(updated).toEqual({
+      bookId: added.bookId,
+      title: added.title,
+      authors: ['New Author A', 'New Author B'],
+      isbn: added.isbn,
+    });
+  });
+
+  it('updates title and authors atomically in a single returned DTO (AC-3.3)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when updateBook is called with both title and authors
+    const updated = await facade.updateBook(
+      added.bookId,
+      sampleUpdateBook({ title: 'Both Updated Title', authors: ['Both Updated Author'] }),
+    );
+
+    // then the returned DTO carries both new values, bookId/isbn unchanged
+    expect(updated).toEqual({
+      bookId: added.bookId,
+      title: 'Both Updated Title',
+      authors: ['Both Updated Author'],
+      isbn: added.isbn,
+    });
+  });
+
+  it('write-through cache: subsequent findBook(isbn) returns the new title and authors (AC-3.4)', async () => {
+    // given a book added to the catalog and an updateBook applied
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const updated = await facade.updateBook(
+      added.bookId,
+      sampleUpdateBook({ title: 'Updated Title', authors: ['Updated Author'] }),
+    );
+
+    // when findBook is called for the book's isbn
+    const found = await facade.findBook(added.isbn);
+
+    // then it returns the updated DTO (cache write-through is observable end-to-end)
+    expect(found).toEqual(updated);
+    expect(found.title).toBe('Updated Title');
+    expect(found.authors).toEqual(['Updated Author']);
+  });
+
+  it('write-through cache: cache.get(isbn) returns the updated BookDto directly (AC-3.5)', async () => {
+    // given a book added to the catalog (cache empty for this isbn — addBook does not populate it)
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    expect(await cache.get(added.isbn)).toBeNull();
+
+    // when updateBook applies a patch
+    const updated = await facade.updateBook(
+      added.bookId,
+      sampleUpdateBook({ title: 'Cache Verified Title', authors: ['Cache Verified Author'] }),
+    );
+
+    // then the cache directly holds the updated BookDto (write-through populates it)
+    expect(await cache.get(added.isbn)).toEqual(updated);
+  });
+
+  it('throws BookNotFoundError for an unknown bookId and does not mutate the cache (AC-3.6)', async () => {
+    // given a cache pre-seeded for an unrelated ISBN, and a book that does NOT exist for the bookId being updated
+    const { cache, facade } = buildScene();
+    const unrelatedIsbn = '978-0135957059';
+    expect(await cache.get(unrelatedIsbn)).toBeNull();
+
+    // when updateBook is called with an unknown bookId
+    // then it throws BookNotFoundError
+    await expect(
+      facade.updateBook('unknown-book-id', sampleUpdateBook({ title: 'x' })),
+    ).rejects.toThrow(BookNotFoundError);
+
+    // and the cache is not modified for any unrelated ISBN
+    expect(await cache.get(unrelatedIsbn)).toBeNull();
+  });
+
+  it('throws InvalidBookError for an empty patch object (AC-3.7)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then updateBook is called with no fields, then InvalidBookError surfaces
+    await expect(facade.updateBook(added.bookId, {})).rejects.toThrow(InvalidBookError);
+  });
+
+  it('throws InvalidBookError for a whitespace-only title (AC-3.8)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then updateBook is called with a trim-empty title, then InvalidBookError surfaces
+    await expect(facade.updateBook(added.bookId, { title: '   ' })).rejects.toThrow(InvalidBookError);
+  });
+
+  it('throws InvalidBookError for an empty or all-blank authors array (AC-3.9)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then updateBook is called with authors: [] then InvalidBookError surfaces
+    await expect(facade.updateBook(added.bookId, { authors: [] })).rejects.toThrow(InvalidBookError);
+
+    // and when / then updateBook is called with authors: ['', '   '] (filter-then-empty), the same error surfaces
+    await expect(facade.updateBook(added.bookId, { authors: ['', '   '] })).rejects.toThrow(
+      InvalidBookError,
+    );
+  });
+
+  it('throws InvalidBookError when isbn is supplied (ISBN is immutable post-create) (AC-3.10)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then updateBook is called with an isbn key, then InvalidBookError surfaces
+    await expect(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      facade.updateBook(added.bookId, { isbn: '978-0135957059' } as any),
+    ).rejects.toThrow(InvalidBookError);
+  });
+});
+
+describe('deleteBook', () => {
+  function buildScene() {
+    const cache = new InMemoryBookCacheGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+    });
+    return { cache, facade };
+  }
+
+  it('resolves without throwing for an existing book (AC-4.1)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then deleteBook resolves without throwing
+    await expect(facade.deleteBook(added.bookId)).resolves.toBeUndefined();
+  });
+
+  it('makes findBook(isbn) throw BookNotFoundError after deletion (AC-4.2)', async () => {
+    // given a book added to the catalog
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when the book is deleted
+    await facade.deleteBook(added.bookId);
+
+    // then findBook for that isbn throws BookNotFoundError
+    await expect(facade.findBook(added.isbn)).rejects.toThrow(BookNotFoundError);
+  });
+
+  it('leaves cache.get(isbn) returning null after deleting a never-cached book (AC-4.3)', async () => {
+    // given a book added but never read (cache is not seeded)
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    expect(await cache.get(added.isbn)).toBeNull();
+
+    // when the book is deleted
+    await facade.deleteBook(added.bookId);
+
+    // then the cache still returns null for that isbn
+    expect(await cache.get(added.isbn)).toBeNull();
+  });
+
+  it('evicts a previously-seeded cache entry on delete (AC-4.4)', async () => {
+    // given a book added to the catalog AND a cache entry pre-seeded for that isbn
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await cache.set(added.isbn, added);
+    expect(await cache.get(added.isbn)).toEqual(added);
+
+    // when the book is deleted
+    await facade.deleteBook(added.bookId);
+
+    // then the cache entry is gone
+    expect(await cache.get(added.isbn)).toBeNull();
+  });
+
+  it('throws BookNotFoundError for an unknown bookId and does not modify the cache (AC-4.5)', async () => {
+    // given a cache pre-seeded with an unrelated entry
+    const { cache, facade } = buildScene();
+    const unrelatedIsbn = '978-0135957059';
+    const unrelatedBook: BookDto = {
+      bookId: 'book-unrelated',
+      title: 'Unrelated',
+      authors: ['Unrelated Author'],
+      isbn: unrelatedIsbn,
+    };
+    await cache.set(unrelatedIsbn, unrelatedBook);
+
+    // when deleteBook is called with an unknown bookId, then it throws BookNotFoundError
+    await expect(facade.deleteBook('unknown-book-id')).rejects.toThrow(BookNotFoundError);
+
+    // and the unrelated cache entry is intact
+    expect(await cache.get(unrelatedIsbn)).toEqual(unrelatedBook);
+  });
+
+  it('only evicts the deleted book and leaves other cache entries intact (AC-4.6)', async () => {
+    // given two books added to the catalog with their cache entries seeded
+    const { cache, facade } = buildScene();
+    const bookA = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bookB = await facade.addBook(sampleNewBookWithIsbn('978-0135957059'));
+    await cache.set(bookA.isbn, bookA);
+    await cache.set(bookB.isbn, bookB);
+
+    // when one book is deleted
+    await facade.deleteBook(bookA.bookId);
+
+    // then only that book's cache entry is gone; the other survives
+    expect(await cache.get(bookA.isbn)).toBeNull();
+    expect(await cache.get(bookB.isbn)).toEqual(bookB);
+  });
+
+  it('throws BookNotFoundError on a second delete of the same bookId (AC-4.7)', async () => {
+    // given a book that has been added and deleted
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await facade.deleteBook(added.bookId);
+
+    // when / then deleteBook is called a second time with the same bookId, then BookNotFoundError surfaces
+    await expect(facade.deleteBook(added.bookId)).rejects.toThrow(BookNotFoundError);
+  });
+
+  it('allows addBook with the same isbn after deleteBook (AC-4.8)', async () => {
+    // given a book added and then deleted
+    const { facade } = buildScene();
+    const original = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await facade.deleteBook(original.bookId);
+
+    // when addBook is called again with the same isbn
+    const recreated = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // then the new book is created with a fresh bookId and the same isbn
+    expect(recreated.isbn).toBe('978-0134685991');
+    expect(recreated.bookId).not.toBe(original.bookId);
+    expect(await facade.findBook('978-0134685991')).toEqual(recreated);
+  });
+});
+
+describe('cache gateway failures', () => {
+  function buildScene() {
+    const innerCache = new InMemoryBookCacheGateway();
+    const throwingCache = new ThrowingOnceBookCacheGateway(innerCache);
+    const facade = createCatalogFacade({
+      bookCacheGateway: throwingCache,
+      newId: sequentialIds('book'),
+    });
+    return { innerCache, throwingCache, facade };
+  }
+
+  it('cache.set throws on findBook miss-then-populate; next findBook recovers (AC-5.1)', async () => {
+    // given a book added to the catalog (repo populated, cache still empty)
+    const { throwingCache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('redis SET failed');
+    throwingCache.armFailureOnNextSet(armedError);
+
+    // when findBook fires (cache miss → repo hit → cache.set throws)
+    // then the exact armed error surfaces to the caller
+    await expect(facade.findBook('978-0134685991')).rejects.toThrow(armedError);
+
+    // and a follow-up findBook succeeds — the arming was single-shot and self-clearing
+    await expect(facade.findBook('978-0134685991')).resolves.toEqual(added);
+  });
+
+  it('cache.get throws on findBook; next findBook recovers (AC-5.2)', async () => {
+    // given a book added to the catalog
+    const { throwingCache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('redis GET failed');
+    throwingCache.armFailureOnNextGet(armedError);
+
+    // when findBook fires (cache.get throws before the repo is consulted)
+    // then the exact armed error surfaces to the caller
+    await expect(facade.findBook('978-0134685991')).rejects.toThrow(armedError);
+
+    // and a follow-up findBook succeeds — the arming was single-shot and self-clearing
+    await expect(facade.findBook('978-0134685991')).resolves.toEqual(added);
+  });
+
+  it('cache.set throws during updateBook write-through; repo is the source of truth (AC-5.3)', async () => {
+    // given a book added with an empty cache (no pre-seed; the repo is the only state)
+    const { facade, throwingCache } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('redis SET failed mid-update');
+    throwingCache.armFailureOnNextSet(armedError);
+
+    // when updateBook applies a patch (repo saveBook commits, then cache.set throws)
+    // then the exact armed error surfaces to the caller
+    await expect(
+      facade.updateBook(added.bookId, sampleUpdateBook({ title: 'Updated Title' })),
+    ).rejects.toThrow(armedError);
+
+    // and the next findBook returns the new title — the repo write was durable
+    expect(await facade.findBook(added.isbn)).toMatchObject({ title: 'Updated Title' });
+  });
+
+  it('cache.evict throws during deleteBook; repo delete is durable (AC-5.4)', async () => {
+    // given a book added to the catalog
+    const { facade, throwingCache } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('redis EVICT failed');
+    throwingCache.armFailureOnNextEvict(armedError);
+
+    // when deleteBook is called (repo delete commits, then cache.evict throws)
+    // then the exact armed error surfaces to the caller
+    await expect(facade.deleteBook(added.bookId)).rejects.toThrow(armedError);
+
+    // and the next findBook throws BookNotFoundError — the repo delete was durable
+    await expect(facade.findBook(added.isbn)).rejects.toThrow(BookNotFoundError);
+  });
+
+  // AC-5.5 (ThrowingOnceBookCacheGateway is spec-local — declared inside this file
+  // and not exported from any barrel) is structurally true: the wrapper is declared
+  // at the bottom of this spec and the verifier confirms the absence from barrels via grep.
+  // No runtime test — the compile is the proof.
+});
+
 // --- ThrowingOnceIsbnLookupGateway -----------------------------------------
 // Spec-local wrapper that decorates a real in-memory gateway and throws on the
 // next findByIsbn call when armed. Mirrors ThrowingOnceReservationRepository in
@@ -569,5 +1054,58 @@ class ThrowingOnceIsbnLookupGateway implements IsbnLookupGateway {
       throw error;
     }
     return this.delegate.findByIsbn(isbn);
+  }
+}
+
+// --- ThrowingOnceBookCacheGateway ------------------------------------------
+// Spec-local wrapper that decorates a real in-memory cache and throws once on
+// the next get/set/evict call when armed. Exists only to prove the facade
+// survives a cache outage at a specific moment without reaching for vi.mock
+// or a Redis stub. Mirrors ThrowingOnceIsbnLookupGateway above; declared here
+// because no other spec needs it.
+class ThrowingOnceBookCacheGateway implements BookCacheGateway {
+  private armedSetError: Error | null = null;
+  private armedGetError: Error | null = null;
+  private armedEvictError: Error | null = null;
+
+  constructor(private readonly delegate: BookCacheGateway) {}
+
+  armFailureOnNextSet(error: Error): void {
+    this.armedSetError = error;
+  }
+
+  armFailureOnNextGet(error: Error): void {
+    this.armedGetError = error;
+  }
+
+  armFailureOnNextEvict(error: Error): void {
+    this.armedEvictError = error;
+  }
+
+  async get(isbn: Isbn): Promise<BookDto | null> {
+    if (this.armedGetError) {
+      const error = this.armedGetError;
+      this.armedGetError = null;
+      throw error;
+    }
+    return this.delegate.get(isbn);
+  }
+
+  async set(isbn: Isbn, book: BookDto): Promise<void> {
+    if (this.armedSetError) {
+      const error = this.armedSetError;
+      this.armedSetError = null;
+      throw error;
+    }
+    return this.delegate.set(isbn, book);
+  }
+
+  async evict(isbn: Isbn): Promise<void> {
+    if (this.armedEvictError) {
+      const error = this.armedEvictError;
+      this.armedEvictError = null;
+      throw error;
+    }
+    return this.delegate.evict(isbn);
   }
 }

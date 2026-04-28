@@ -30,6 +30,10 @@ export class InMemoryCatalogRepository implements CatalogRepository {
     return Array.from(this.booksById.values()).filter((book) => bookIds.includes(book.bookId));
   }
 
+  async deleteBook(bookId: BookId): Promise<void> {
+    this.booksById.delete(bookId);
+  }
+
   async saveCopy(copy: CopyDto): Promise<void> {
     this.copiesById.set(copy.copyId, copy);
   }

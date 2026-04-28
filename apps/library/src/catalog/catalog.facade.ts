@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
+import { InMemoryBookCacheGateway } from '../shared/book-cache-gateway/in-memory-book-cache-gateway.js';
+import type { BookCacheGateway } from '../shared/book-cache-gateway/book-cache-gateway.js';
 import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
 import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
 import type { CatalogRepository } from './catalog.repository.js';
-import { parseIsbn, parseNewBook, parseNewCopy } from './catalog.schema.js';
+import { parseIsbn, parseNewBook, parseNewCopy, parseUpdateBook } from './catalog.schema.js';
 import {
   BookNotFoundError,
   CopyNotFoundError,
@@ -17,6 +19,7 @@ import {
   type Isbn,
   type NewBookDto,
   type NewCopyDto,
+  type UpdateBookDto,
 } from './catalog.types.js';
 
 type IdGenerator = () => string;
@@ -27,6 +30,7 @@ export class CatalogFacade {
     private readonly repository: CatalogRepository,
     private readonly newId: IdGenerator = randomUUID,
     private readonly isbnGateway: IsbnLookupGateway = new InMemoryIsbnLookupGateway(),
+    private readonly cache: BookCacheGateway = new InMemoryBookCacheGateway(),
   ) {}
 
   async addBook(dto: NewBookDto): Promise<BookDto> {
@@ -56,11 +60,39 @@ export class CatalogFacade {
     return book;
   }
 
+  async updateBook(bookId: BookId, dto: UpdateBookDto): Promise<BookDto> {
+    const parsed = parseUpdateBook(dto);
+    const existing = await this.repository.findBookById(bookId);
+    if (!existing) {
+      throw new BookNotFoundError(bookId);
+    }
+    const updated: BookDto = {
+      ...existing,
+      ...(parsed.title !== undefined ? { title: parsed.title } : {}),
+      ...(parsed.authors !== undefined ? { authors: parsed.authors } : {}),
+    };
+    await this.repository.saveBook(updated);
+    await this.cache.set(existing.isbn, updated);
+    return updated;
+  }
+
+  async deleteBook(bookId: BookId): Promise<void> {
+    const existing = await this.repository.findBookById(bookId);
+    if (!existing) {
+      throw new BookNotFoundError(bookId);
+    }
+    await this.repository.deleteBook(bookId);
+    await this.cache.evict(existing.isbn);
+  }
+
   async findBook(isbn: Isbn): Promise<BookDto> {
+    const cached = await this.cache.get(isbn);
+    if (cached) return cached;
     const book = await this.repository.findBookByIsbn(isbn);
     if (!book) {
       throw new BookNotFoundError(isbn);
     }
+    await this.cache.set(isbn, book);
     return book;
   }
 

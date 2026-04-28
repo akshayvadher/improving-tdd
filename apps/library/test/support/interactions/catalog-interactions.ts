@@ -1,7 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 
-import type { NewBookDto, NewCopyDto } from '../../../src/catalog/catalog.types.js';
+import type { NewBookDto, NewCopyDto, UpdateBookDto } from '../../../src/catalog/catalog.types.js';
 
 type Agent = ReturnType<typeof request>;
 type HttpCall = ReturnType<Agent['get']>;
@@ -20,6 +20,18 @@ export function getBook(app: INestApplication, isbn: string): HttpCall {
 
 export function listBooks(app: INestApplication): HttpCall {
   return server(app).get('/books');
+}
+
+export function patchBook(
+  app: INestApplication,
+  bookId: string,
+  dto: UpdateBookDto,
+): HttpCall {
+  return server(app).patch(`/books/${bookId}`).send(dto);
+}
+
+export function deleteBook(app: INestApplication, bookId: string): HttpCall {
+  return server(app).delete(`/books/${bookId}`);
 }
 
 export function registerCopy(app: INestApplication, bookId: string, dto: NewCopyDto): HttpCall {

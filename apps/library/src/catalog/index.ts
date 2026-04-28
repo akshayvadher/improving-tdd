@@ -15,4 +15,5 @@ export {
   type Isbn,
   type NewBookDto,
   type NewCopyDto,
+  type UpdateBookDto,
 } from './catalog.types.js';

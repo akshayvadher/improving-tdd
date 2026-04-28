@@ -47,6 +47,10 @@ export class DrizzleCatalogRepository implements CatalogRepository {
     return rows.map(toBookDto);
   }
 
+  async deleteBook(bookId: BookId): Promise<void> {
+    await this.db.delete(books).where(eq(books.bookId, bookId));
+  }
+
   async saveCopy(copy: CopyDto): Promise<void> {
     await this.db
       .insert(copies)

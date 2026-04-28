@@ -6,6 +6,7 @@ export interface CatalogRepository {
   findBookByIsbn(isbn: Isbn): Promise<BookDto | undefined>;
   listBooks(): Promise<BookDto[]>;
   listBooksByIds(bookIds: BookId[]): Promise<BookDto[]>;
+  deleteBook(bookId: BookId): Promise<void>;
 
   saveCopy(copy: CopyDto): Promise<void>;
   findCopyById(copyId: CopyId): Promise<CopyDto | undefined>;

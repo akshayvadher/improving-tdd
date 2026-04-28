@@ -1,4 +1,10 @@
-import type { CopyCondition, Isbn, NewBookDto, NewCopyDto } from './catalog.types.js';
+import type {
+  CopyCondition,
+  Isbn,
+  NewBookDto,
+  NewCopyDto,
+  UpdateBookDto,
+} from './catalog.types.js';
 
 export function sampleNewBook(overrides: Partial<NewBookDto> = {}): NewBookDto {
   return {
@@ -11,6 +17,14 @@ export function sampleNewBook(overrides: Partial<NewBookDto> = {}): NewBookDto {
 
 export function sampleNewBookWithIsbn(isbn: Isbn): NewBookDto {
   return sampleNewBook({ isbn });
+}
+
+export function sampleUpdateBook(overrides: Partial<UpdateBookDto> = {}): UpdateBookDto {
+  return {
+    title: 'Updated Title',
+    authors: ['Updated Author'],
+    ...overrides,
+  };
 }
 
 export function sampleNewCopy(overrides: Partial<NewCopyDto> = {}): NewCopyDto {

@@ -25,6 +25,21 @@ export const NewBookSchema = z.object({
   isbn: IsbnSchema,
 });
 
+export const UpdateBookSchema = z
+  .object({
+    title: z.string({ required_error: 'title is required' }).trim().min(1, 'title is required').optional(),
+    authors: z
+      .array(z.string().trim())
+      .transform((authors) => authors.filter((author) => author.length > 0))
+      .refine((authors) => authors.length > 0, 'at least one author is required')
+      .optional(),
+  })
+  .strict('isbn cannot be updated')
+  .refine(
+    (dto) => dto.title !== undefined || dto.authors !== undefined,
+    'at least one of title or authors must be provided',
+  );
+
 export const NewCopySchema = z.object({
   bookId: z.string(),
   condition: z.enum(['NEW', 'GOOD', 'FAIR', 'POOR'], {
@@ -34,6 +49,14 @@ export const NewCopySchema = z.object({
 
 export function parseNewBook(input: unknown): z.infer<typeof NewBookSchema> {
   const result = NewBookSchema.safeParse(input);
+  if (!result.success) {
+    throw new InvalidBookError(result.error.issues[0]?.message ?? 'invalid input');
+  }
+  return result.data;
+}
+
+export function parseUpdateBook(input: unknown): z.infer<typeof UpdateBookSchema> {
+  const result = UpdateBookSchema.safeParse(input);
   if (!result.success) {
     throw new InvalidBookError(result.error.issues[0]?.message ?? 'invalid input');
   }
