@@ -59,6 +59,28 @@ private async updateCopyStatus(copyId: CopyId, status: CopyStatus): Promise<Copy
 }
 ```
 
+### What "unit" means here
+
+The unit is **the module's public behavior**, not a class. One facade test deliberately exercises *multiple* real collaborators in concert — and that is the point.
+
+The cache slice's read-through test is the cleanest mini-example. To prove "cache HIT returns the cached book without consulting the repo," the test wires a real `InMemoryBookCacheGateway`, a real `InMemoryCatalogRepository`, and the real `CatalogFacade`:
+
+```ts
+// apps/library/src/catalog/catalog.facade.spec.ts
+it('returns the cached BookDto on a cache hit without consulting the repository', async () => {
+  const cache = new InMemoryBookCacheGateway();
+  const facade = createCatalogFacade({ bookCacheGateway: cache });
+  await cache.set(isbn, book);
+  expect(await facade.findBook(isbn)).toEqual(book);
+});
+```
+
+Three real classes, one test, no mocks. The contract — "cache HIT short-circuits the repo" — is **multi-class by nature**. No single class can prove it; cache and repo must cooperate. A class-level test would mock both and check call sequences instead of behavior. That is the "test too low" failure mode in miniature.
+
+Stronger examples already in the demo: `LendingFacade.listOverdueLoansWithTitles` (Lending's loan repo + `CatalogFacade.getBooks` + Catalog's book repo — four real classes per test), `CatalogFacade.addBook` (repo + ISBN gateway).
+
+If the test reads as one class doing the work, you have probably reduced it to mocks and lost the contract. The unit is the module.
+
 ---
 
 ## Principle 2 — Don't test too high
