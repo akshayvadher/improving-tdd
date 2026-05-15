@@ -1,6 +1,6 @@
 import type { MemberId } from '../membership/index.js';
 
-export type Role = 'MEMBER' | 'ACCOUNT';
+export type Role = 'MEMBER' | 'ACCOUNT' | 'STAFF';
 
 export interface AuthUser {
   memberId: MemberId;

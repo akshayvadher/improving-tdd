@@ -7,4 +7,8 @@ export const POLICY: Readonly<Record<string, Readonly<Record<string, ReadonlyArr
   lending: {
     borrow: ['MEMBER'],
   },
+  catalog: {
+    uploadThumbnail: ['STAFF'],
+    removeThumbnail: ['STAFF'],
+  },
 };

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { UnauthorizedRoleError } from '../access-control/index.js';
+import { AccessControlFacade, UnauthorizedRoleError } from '../access-control/index.js';
 import { sampleAuthUser } from '../access-control/sample-access-control-data.js';
 import { CatalogFacade } from '../catalog/catalog.facade.js';
 import { createCatalogFacade } from '../catalog/catalog.configuration.js';
@@ -20,6 +20,7 @@ import { sampleNewBook, sampleNewCopy } from '../catalog/sample-catalog-data.js'
 import { createMembershipFacade } from '../membership/membership.configuration.js';
 import { sampleNewMember } from '../membership/sample-membership-data.js';
 import { InMemoryEventBus } from '../shared/events/in-memory-event-bus.js';
+import { InMemoryFileStorageGateway } from '../shared/file-storage-gateway/in-memory-file-storage-gateway.js';
 import { InMemoryLoanRepository } from './in-memory-loan.repository.js';
 import { InMemoryReservationRepository } from './in-memory-reservation.repository.js';
 import { InMemoryTransactionalContext } from './in-memory-transactional-context.js';
@@ -891,7 +892,14 @@ class RecordingCatalogFacade extends CatalogFacade {
   constructor(private readonly delegate: CatalogFacade) {
     // Placeholder super-state — every method is overridden to delegate, so
     // the repo/newId/gateway on this instance are never exercised.
-    super(new InMemoryCatalogRepository());
+    super(
+      new InMemoryCatalogRepository(),
+      undefined,
+      undefined,
+      undefined,
+      new AccessControlFacade(),
+      new InMemoryFileStorageGateway(),
+    );
   }
 
   override getBooks(bookIds: BookId[]): Promise<BookDto[]> {
@@ -933,7 +941,14 @@ class RecordingCatalogFacade extends CatalogFacade {
 // the real inner facade so borrow/etc. still work during test setup.
 class DroppingBookIdsCatalogFacade extends CatalogFacade {
   constructor(private readonly delegate: CatalogFacade) {
-    super(new InMemoryCatalogRepository());
+    super(
+      new InMemoryCatalogRepository(),
+      undefined,
+      undefined,
+      undefined,
+      new AccessControlFacade(),
+      new InMemoryFileStorageGateway(),
+    );
   }
 
   override getBooks(_bookIds: BookId[]): Promise<BookDto[]> {

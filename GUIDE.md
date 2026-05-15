@@ -321,7 +321,7 @@ This is scoped to **one module's own data**. The cross-module call `catalog.mark
 
 The "in-memory, not mocks" rule applies just as much to **outbound collaborators** — external APIs the module calls — as it does to the module's own repositories. An inbound port (a repository) and an outbound port (a gateway) are symmetric: both are interfaces, both get a real in-memory default, and neither gets mocked.
 
-Request/response gateways: `IsbnLookupGateway`. Streaming gateways: `ChatGateway` — see Principle 13.
+Request/response gateways: `IsbnLookupGateway`. Streaming gateways: `ChatGateway` — see Principle 13. Binary-payload gateways: `FileStorageGateway` — see below.
 
 The canonical example is `IsbnLookupGateway` in `apps/library/src/shared/isbn-gateway/`. `CatalogFacade.addBook` calls it to enrich missing `title` / `authors` from an ISBN. The port (`isbn-lookup-gateway.ts`) is a one-method interface; `InMemoryIsbnLookupGateway` (`in-memory-isbn-lookup-gateway.ts`) is a `Map`-backed default with a `seed(isbn, metadata)` helper for tests. The Nest wiring registers the in-memory gateway as the production default — there is no real HTTP adapter yet, and when one arrives the port does not change.
 
@@ -330,6 +330,17 @@ Fault injection for an outbound gateway uses the same wrapper pattern as for own
 This is **different from Principle 7's hand-rolled fake of another module's facade**. A module facade is someone else's bounded context, already built and already tested — the hand-rolled fake is the narrow escape hatch when that facade's real factory cannot produce the moment you need to observe. A gateway is infrastructure: a thin port to an external API, owned by no module, always collaborated with through its in-memory default.
 
 Why this beats mocks: deterministic fault injection (the error is exactly the instance you armed), the real interface contract is exercised (the wrapper `implements IsbnLookupGateway`, so the compiler breaks if the port drifts), and there is no test double that silently diverges from reality — the "real" shape of the gateway IS the in-memory one.
+
+### Binary-payload gateways — file storage
+
+The pattern survives intact when the payload is bytes. `FileStorageGateway` (`apps/library/src/shared/file-storage-gateway/`) is a three-method port (`put` / `get` / `remove`) with two non-obvious shapes worth pinning:
+
+- **Idempotency lives in the port, not the facade.** `put(contentHash, bytes, mimeType)` returns `{ contentHash, alreadyExisted }` so a second upload of the same bytes is a no-op and observably so. The facade asks the gateway to store; the gateway reports whether the bytes were new. A future S3 adapter computes and checks the hash before uploading; the facade does not change.
+- **The in-memory adapter defensive-copies on both write and read.** A caller mutating the input `Uint8Array` after `put` must not affect stored bytes; two calls to `get` must return independent buffers. Both directions are pinned in `in-memory-file-storage-gateway.spec.ts`. This is the byte-payload analog of returning a fresh DTO from `findX` — the gateway state cannot be poked through a returned handle.
+- **Validation stays in the module's schema.** Magic-byte mime sniffing (JPEG / PNG / WebP), size caps, and content-hash computation all live in `parseThumbnailUpload` under `catalog.schema.ts` — not in the gateway. The gateway stores opaque bytes; "this byte array is a JPEG" is catalog input-validation, not gateway-domain knowledge. Pulling sniffing into the gateway would couple it to the consumer's allowed-mime policy.
+- **`CountingFileStorageGateway` pins side-effect ordering, not call counts.** The spec-local wrapper at the bottom of `catalog.facade.spec.ts` counts `put` / `remove` calls so a test can assert "validation runs before storage" (oversize / wrong-mime / auth failure → `putCallCount === 0`). This is *invariant pinning* — proving that no side effect happens on the error path — not implementation coupling. Asserting "`findX` was called 3 times" remains forbidden (Principle 7). Asserting "the gateway was not called when validation failed" is the same kind of behavioural check as asserting "nothing was saved" after a rollback.
+
+Fault injection is the usual `ThrowingOnceFileStorageGateway`, spec-local, mirroring `ThrowingOnceIsbnLookupGateway` line-for-line. Used in slice 5's cache-failure tests to prove that an upstream gateway failure during `attachThumbnail` does not write to the repository.
 
 ### Substrate alternative: PGlite
 

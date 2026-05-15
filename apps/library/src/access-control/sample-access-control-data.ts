@@ -7,3 +7,11 @@ export function sampleAuthUser(overrides: Partial<AuthUser> = {}): AuthUser {
     ...overrides,
   };
 }
+
+export function sampleStaffAuthUser(overrides: Partial<AuthUser> = {}): AuthUser {
+  return {
+    memberId: 'staff-placeholder-id',
+    role: 'STAFF',
+    ...overrides,
+  };
+}

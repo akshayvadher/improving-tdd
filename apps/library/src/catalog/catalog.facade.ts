@@ -1,17 +1,26 @@
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 
+import { AccessControlFacade, type AuthUser } from '../access-control/index.js';
 import { InMemoryBookCacheGateway } from '../shared/book-cache-gateway/in-memory-book-cache-gateway.js';
 import type { BookCacheGateway } from '../shared/book-cache-gateway/book-cache-gateway.js';
+import type { FileStorageGateway } from '../shared/file-storage-gateway/file-storage-gateway.js';
 import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
 import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
 import type { CatalogRepository } from './catalog.repository.js';
-import { parseIsbn, parseNewBook, parseNewCopy, parseUpdateBook } from './catalog.schema.js';
+import {
+  parseIsbn,
+  parseNewBook,
+  parseNewCopy,
+  parseThumbnailUpload,
+  parseUpdateBook,
+} from './catalog.schema.js';
 import {
   BookNotFoundError,
   CopyNotFoundError,
   CopyStatus,
   DuplicateIsbnError,
+  ThumbnailNotFoundError,
   type BookDto,
   type BookId,
   type CopyDto,
@@ -31,6 +40,8 @@ export class CatalogFacade {
     private readonly newId: IdGenerator = randomUUID,
     private readonly isbnGateway: IsbnLookupGateway = new InMemoryIsbnLookupGateway(),
     private readonly cache: BookCacheGateway = new InMemoryBookCacheGateway(),
+    private readonly accessControl: AccessControlFacade,
+    private readonly fileStorage: FileStorageGateway,
   ) {}
 
   async addBook(dto: NewBookDto): Promise<BookDto> {
@@ -76,10 +87,76 @@ export class CatalogFacade {
     return updated;
   }
 
+  async attachThumbnail(
+    authUser: AuthUser,
+    bookId: BookId,
+    upload: { bytes: Uint8Array; declaredMimeType: string },
+  ): Promise<BookDto> {
+    await this.accessControl.authorize(authUser, 'catalog', 'uploadThumbnail');
+    const parsed = parseThumbnailUpload(upload);
+    const existing = await this.repository.findBookById(bookId);
+    if (!existing) {
+      throw new BookNotFoundError(bookId);
+    }
+    await this.fileStorage.put(parsed.contentHash, parsed.bytes, parsed.mimeType);
+    const updated: BookDto = {
+      ...existing,
+      thumbnail: {
+        contentHash: parsed.contentHash,
+        mimeType: parsed.mimeType,
+        byteLength: parsed.byteLength,
+      },
+    };
+    await this.repository.saveBook(updated);
+    await this.cache.set(existing.isbn, updated);
+    return updated;
+  }
+
+  async readThumbnail(
+    bookId: BookId,
+  ): Promise<{ bytes: Uint8Array; mimeType: string; contentHash: string; byteLength: number }> {
+    const book = await this.repository.findBookById(bookId);
+    if (!book) {
+      throw new BookNotFoundError(bookId);
+    }
+    if (!book.thumbnail) {
+      throw new ThumbnailNotFoundError(bookId);
+    }
+    const stored = await this.fileStorage.get(book.thumbnail.contentHash);
+    if (!stored) {
+      throw new ThumbnailNotFoundError(bookId);
+    }
+    return {
+      bytes: stored.bytes,
+      mimeType: stored.mimeType,
+      contentHash: book.thumbnail.contentHash,
+      byteLength: book.thumbnail.byteLength,
+    };
+  }
+
+  async removeThumbnail(authUser: AuthUser, bookId: BookId): Promise<BookDto> {
+    await this.accessControl.authorize(authUser, 'catalog', 'removeThumbnail');
+    const existing = await this.repository.findBookById(bookId);
+    if (!existing) {
+      throw new BookNotFoundError(bookId);
+    }
+    if (!existing.thumbnail) {
+      return existing;
+    }
+    const { thumbnail, ...withoutThumbnail } = existing;
+    await this.fileStorage.remove(thumbnail.contentHash);
+    await this.repository.saveBook(withoutThumbnail);
+    await this.cache.set(existing.isbn, withoutThumbnail);
+    return withoutThumbnail;
+  }
+
   async deleteBook(bookId: BookId): Promise<void> {
     const existing = await this.repository.findBookById(bookId);
     if (!existing) {
       throw new BookNotFoundError(bookId);
+    }
+    if (existing.thumbnail) {
+      await this.fileStorage.remove(existing.thumbnail.contentHash);
     }
     await this.repository.deleteBook(bookId);
     await this.cache.evict(existing.isbn);

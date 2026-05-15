@@ -1,6 +1,33 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
-import { InvalidBookError, InvalidCopyError } from './catalog.types.js';
+import { InvalidBookError, InvalidCopyError, InvalidThumbnailError } from './catalog.types.js';
+
+type SupportedThumbnailMime = 'image/jpeg' | 'image/png' | 'image/webp';
+
+const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const JPEG_MAGIC = [0xff, 0xd8, 0xff];
+const WEBP_RIFF_MAGIC = [0x52, 0x49, 0x46, 0x46];
+const WEBP_FORMAT_MAGIC = [0x57, 0x45, 0x42, 0x50];
+
+function hasPrefix(bytes: Uint8Array, prefix: number[], offset = 0): boolean {
+  if (bytes.byteLength < offset + prefix.length) return false;
+  for (let i = 0; i < prefix.length; i++) {
+    if (bytes[offset + i] !== prefix[i]) return false;
+  }
+  return true;
+}
+
+function sniffImageMime(bytes: Uint8Array): SupportedThumbnailMime | null {
+  if (hasPrefix(bytes, JPEG_MAGIC)) return 'image/jpeg';
+  if (hasPrefix(bytes, PNG_MAGIC)) return 'image/png';
+  if (hasPrefix(bytes, WEBP_RIFF_MAGIC) && hasPrefix(bytes, WEBP_FORMAT_MAGIC, 8)) {
+    return 'image/webp';
+  }
+  return null;
+}
 
 // ISBN-10 (9 digits + digit or X) or ISBN-13 (13 digits), with optional
 // hyphens or spaces allowed anywhere. Not a checksum check — that belongs
@@ -77,4 +104,38 @@ export function parseNewCopy(input: unknown): z.infer<typeof NewCopySchema> {
     throw new InvalidCopyError(result.error.issues[0]?.message ?? 'invalid input');
   }
   return result.data;
+}
+
+export interface ParsedThumbnailUpload {
+  bytes: Uint8Array;
+  mimeType: SupportedThumbnailMime;
+  contentHash: string;
+  byteLength: number;
+}
+
+export function parseThumbnailUpload(input: {
+  bytes: Uint8Array;
+  declaredMimeType: string;
+}): ParsedThumbnailUpload {
+  const { bytes, declaredMimeType } = input;
+  if (bytes.byteLength === 0) {
+    throw new InvalidThumbnailError('empty');
+  }
+  if (bytes.byteLength > MAX_THUMBNAIL_BYTES) {
+    throw new InvalidThumbnailError('oversize');
+  }
+  const sniffedMime = sniffImageMime(bytes);
+  if (sniffedMime === null) {
+    throw new InvalidThumbnailError('unsupported mime');
+  }
+  if (sniffedMime !== declaredMimeType) {
+    throw new InvalidThumbnailError('mime mismatch');
+  }
+  const contentHash = createHash('sha256').update(bytes).digest('hex');
+  return {
+    bytes,
+    mimeType: sniffedMime,
+    contentHash,
+    byteLength: bytes.byteLength,
+  };
 }

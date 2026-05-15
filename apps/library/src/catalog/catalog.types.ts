@@ -22,11 +22,18 @@ export interface UpdateBookDto {
   authors?: string[];
 }
 
+export interface BookThumbnailDto {
+  contentHash: string;
+  mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+  byteLength: number;
+}
+
 export interface BookDto {
   bookId: BookId;
   title: string;
   authors: string[];
   isbn: Isbn;
+  thumbnail?: BookThumbnailDto;
 }
 
 export interface NewCopyDto {
@@ -79,5 +86,22 @@ export class InvalidCopyError extends Error {
     super(`Invalid copy: ${reason}`);
     this.name = 'InvalidCopyError';
     this.reason = reason;
+  }
+}
+
+export class InvalidThumbnailError extends Error {
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(`Invalid thumbnail: ${reason}`);
+    this.name = 'InvalidThumbnailError';
+    this.reason = reason;
+  }
+}
+
+export class ThumbnailNotFoundError extends Error {
+  constructor(public readonly bookId: BookId) {
+    super(`No thumbnail attached to book ${bookId}`);
+    this.name = 'ThumbnailNotFoundError';
   }
 }

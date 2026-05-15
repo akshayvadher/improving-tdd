@@ -1,7 +1,20 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
+import { UnauthorizedRoleError } from '../access-control/access-control.types.js';
+import {
+  sampleAuthUser,
+  sampleStaffAuthUser,
+} from '../access-control/sample-access-control-data.js';
 import type { BookCacheGateway } from '../shared/book-cache-gateway/book-cache-gateway.js';
 import { InMemoryBookCacheGateway } from '../shared/book-cache-gateway/in-memory-book-cache-gateway.js';
+import type {
+  FileStorageGateway,
+  PutResult,
+  StoredFile,
+} from '../shared/file-storage-gateway/file-storage-gateway.js';
+import { InMemoryFileStorageGateway } from '../shared/file-storage-gateway/in-memory-file-storage-gateway.js';
 import type { BookMetadata } from '../shared/isbn-gateway/book-metadata.js';
 import { InMemoryIsbnLookupGateway } from '../shared/isbn-gateway/in-memory-isbn-lookup-gateway.js';
 import type { IsbnLookupGateway } from '../shared/isbn-gateway/isbn-lookup-gateway.js';
@@ -14,6 +27,8 @@ import {
   DuplicateIsbnError,
   InvalidBookError,
   InvalidCopyError,
+  InvalidThumbnailError,
+  ThumbnailNotFoundError,
   type BookDto,
   type Isbn,
 } from './catalog.types.js';
@@ -952,6 +967,46 @@ describe('deleteBook', () => {
     expect(recreated.bookId).not.toBe(original.bookId);
     expect(await facade.findBook('978-0134685991')).toEqual(recreated);
   });
+
+  it('removes the attached thumbnail bytes from file storage when deleting a book that has a thumbnail', async () => {
+    // given a book with a thumbnail attached
+    const cache = new InMemoryBookCacheGateway();
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+      fileStorageGateway: fileStorage,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const attached = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    const attachedHash = attached.thumbnail!.contentHash;
+
+    // when the book is deleted
+    await facade.deleteBook(added.bookId);
+
+    // then fileStorage.remove was called exactly once with the thumbnail's contentHash
+    expect(fileStorage.removeCallCount).toBe(1);
+    expect(fileStorage.removedHashes).toEqual([attachedHash]);
+  });
+
+  it('does not call fileStorage.remove when deleting a book without a thumbnail', async () => {
+    // given a book in the catalog with no thumbnail ever attached
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      fileStorageGateway: fileStorage,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when the book is deleted
+    await facade.deleteBook(added.bookId);
+
+    // then fileStorage.remove was never called
+    expect(fileStorage.removeCallCount).toBe(0);
+  });
 });
 
 describe('cache gateway failures', () => {
@@ -1033,6 +1088,837 @@ describe('cache gateway failures', () => {
   // No runtime test — the compile is the proof.
 });
 
+// --- attachThumbnail fixtures ----------------------------------------------
+// Phase 1 sniffer only checks magic-byte prefixes — bytes after the prefix do
+// not need to form a valid image. Tests build the smallest sequence that the
+// sniffer accepts, then pad with zeros where length matters (oversize).
+function sampleThumbnailBytes(overrides: { extra?: number } = {}): Uint8Array {
+  const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const extraLen = overrides.extra ?? 4;
+  const bytes = new Uint8Array(pngMagic.length + extraLen);
+  bytes.set(pngMagic, 0);
+  // distinct extra bytes so two different `extra` values hash differently
+  for (let i = 0; i < extraLen; i += 1) {
+    bytes[pngMagic.length + i] = (i + 1) & 0xff;
+  }
+  return bytes;
+}
+
+function jpegBytes(): Uint8Array {
+  // JPEG magic is 3 bytes; pad with a SOI/APP0 fragment so the prefix check
+  // matches and the array is plausibly file-like.
+  return new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+}
+
+function webpBytes(): Uint8Array {
+  // RIFF????WEBPVP8 — 4 bytes RIFF, 4 bytes size, 4 bytes WEBP, then a marker
+  return new Uint8Array([
+    0x52, 0x49, 0x46, 0x46, // RIFF
+    0x1a, 0x00, 0x00, 0x00, // (some length, ignored by sniffer)
+    0x57, 0x45, 0x42, 0x50, // WEBP
+    0x56, 0x50, 0x38, 0x20, // VP8 marker
+  ]);
+}
+
+function pdfBytes(): Uint8Array {
+  // PDF magic 25 50 44 46 plus version string
+  return new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]);
+}
+
+// --- CountingFileStorageGateway --------------------------------------------
+// Spec-local wrapper that delegates to an inner gateway and counts put calls.
+// Lets the spec assert "the gateway is not written to" on validation/auth
+// failures and "exactly one write across two same-bytes uploads" on idempotent
+// re-upload — without reaching for vi.mock and without exposing internal state
+// from InMemoryFileStorageGateway. Mirrors the spec-local wrapper pattern of
+// ThrowingOnceBookCacheGateway above. Not exported from any barrel.
+class CountingFileStorageGateway implements FileStorageGateway {
+  private _putCallCount = 0;
+  private _removeCallCount = 0;
+  private readonly _removedHashes: string[] = [];
+
+  constructor(private readonly delegate: FileStorageGateway = new InMemoryFileStorageGateway()) {}
+
+  get putCallCount(): number {
+    return this._putCallCount;
+  }
+
+  get removeCallCount(): number {
+    return this._removeCallCount;
+  }
+
+  get removedHashes(): readonly string[] {
+    return this._removedHashes;
+  }
+
+  async put(contentHash: string, bytes: Uint8Array, mimeType: string): Promise<PutResult> {
+    this._putCallCount += 1;
+    return this.delegate.put(contentHash, bytes, mimeType);
+  }
+
+  get(contentHash: string): Promise<StoredFile | null> {
+    return this.delegate.get(contentHash);
+  }
+
+  async remove(contentHash: string): Promise<void> {
+    this._removeCallCount += 1;
+    this._removedHashes.push(contentHash);
+    return this.delegate.remove(contentHash);
+  }
+}
+
+describe('attachThumbnail — parseThumbnailUpload (exercised through facade)', () => {
+  function buildScene() {
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      fileStorageGateway: fileStorage,
+    });
+    return { facade, fileStorage };
+  }
+
+  it('returns a BookDto whose thumbnail has the right contentHash, mimeType, and byteLength on a valid PNG', async () => {
+    // given a staff caller and a book in the catalog
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+
+    // when a valid PNG is attached
+    const updated = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+
+    // then the returned BookDto carries a thumbnail subobject with the matching
+    // contentHash, mimeType, and byteLength (contentHash is lowercase-hex SHA-256)
+    expect(updated.thumbnail).toBeDefined();
+    expect(updated.thumbnail?.mimeType).toBe('image/png');
+    expect(updated.thumbnail?.byteLength).toBe(bytes.byteLength);
+    expect(updated.thumbnail?.contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects empty bytes with InvalidThumbnailError reason="empty"', async () => {
+    // given a staff caller and a book in the catalog
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attaching a zero-length Uint8Array throws InvalidThumbnailError("empty")
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: new Uint8Array(0),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toMatchObject({ name: 'InvalidThumbnailError', reason: 'empty' });
+  });
+
+  it('rejects oversize bytes (2 MB + 1) with InvalidThumbnailError reason="oversize"', async () => {
+    // given a staff caller, a book, and a payload exactly 1 byte over the cap
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const oversize = new Uint8Array(2 * 1024 * 1024 + 1);
+    // start with PNG magic so the prefix exists; the size check fires before mime sniff
+    oversize.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+
+    // when / then attaching oversize bytes throws InvalidThumbnailError("oversize")
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: oversize,
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toMatchObject({ name: 'InvalidThumbnailError', reason: 'oversize' });
+  });
+
+  it('rejects unsupported mime (PDF magic) with InvalidThumbnailError reason="unsupported mime"', async () => {
+    // given a staff caller, a book, and a PDF byte sequence
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attaching bytes whose magic does not match any supported image
+    // type throws InvalidThumbnailError("unsupported mime")
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: pdfBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toMatchObject({ name: 'InvalidThumbnailError', reason: 'unsupported mime' });
+  });
+
+  it('rejects mime mismatch (PNG bytes declared as image/jpeg) with reason="mime mismatch"', async () => {
+    // given a staff caller, a book, and PNG bytes mislabeled as jpeg
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attaching with a declared mime that disagrees with the sniffed
+    // mime throws InvalidThumbnailError("mime mismatch")
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/jpeg',
+      }),
+    ).rejects.toMatchObject({ name: 'InvalidThumbnailError', reason: 'mime mismatch' });
+  });
+
+  it('accepts JPEG bytes declared as image/jpeg', async () => {
+    // given a staff caller and a book
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = jpegBytes();
+
+    // when a JPEG with matching declared mime is attached
+    const updated = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/jpeg',
+    });
+
+    // then the saved thumbnail's mimeType is image/jpeg and byteLength matches
+    expect(updated.thumbnail?.mimeType).toBe('image/jpeg');
+    expect(updated.thumbnail?.byteLength).toBe(bytes.byteLength);
+  });
+
+  it('accepts WebP bytes declared as image/webp', async () => {
+    // given a staff caller and a book
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = webpBytes();
+
+    // when a WebP with matching declared mime is attached
+    const updated = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/webp',
+    });
+
+    // then the saved thumbnail's mimeType is image/webp and byteLength matches
+    expect(updated.thumbnail?.mimeType).toBe('image/webp');
+    expect(updated.thumbnail?.byteLength).toBe(bytes.byteLength);
+  });
+});
+
+describe('attachThumbnail — facade behavior', () => {
+  function buildScene() {
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      fileStorageGateway: fileStorage,
+    });
+    return { facade, fileStorage };
+  }
+
+  it('persists the thumbnail metadata so a subsequent findBook returns the BookDto with the thumbnail subobject', async () => {
+    // given a staff caller, a book in the catalog, and valid PNG bytes
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+
+    // when the thumbnail is attached
+    const updated = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+
+    // then findBook returns the BookDto including the thumbnail subobject
+    const found = await facade.findBook(book.isbn);
+    expect(found.thumbnail).toEqual(updated.thumbnail);
+    expect(found.thumbnail?.mimeType).toBe('image/png');
+    expect(found.thumbnail?.byteLength).toBe(bytes.byteLength);
+  });
+
+  it('throws BookNotFoundError for an unknown bookId AND does not write to the file-storage gateway', async () => {
+    // given a staff caller and a fresh gateway with no books in the catalog
+    const { facade, fileStorage } = buildScene();
+
+    // when / then attachThumbnail against an unknown bookId throws BookNotFoundError
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), 'unknown-book-id', {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(BookNotFoundError);
+
+    // and the gateway was never written to
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+
+  it('throws UnauthorizedRoleError for a MEMBER caller AND does not write to the file-storage gateway', async () => {
+    // given a MEMBER caller and a book in the catalog
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attachThumbnail with a MEMBER auth user throws UnauthorizedRoleError
+    await expect(
+      facade.attachThumbnail(sampleAuthUser({ role: 'MEMBER' }), book.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(UnauthorizedRoleError);
+
+    // and the gateway was never written to (auth runs before storage)
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+
+  it('throws UnauthorizedRoleError for an ACCOUNT caller AND does not write to the file-storage gateway', async () => {
+    // given an ACCOUNT caller and a book in the catalog
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attachThumbnail with an ACCOUNT auth user throws UnauthorizedRoleError
+    await expect(
+      facade.attachThumbnail(sampleAuthUser({ role: 'ACCOUNT' }), book.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(UnauthorizedRoleError);
+
+    // and the gateway was never written to (auth runs before storage)
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+
+  it('is idempotent: re-uploading the same bytes returns the same contentHash and writes the gateway only once net', async () => {
+    // given a staff caller, a book, and a payload that gets attached twice
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+
+    // when attachThumbnail is called twice with the exact same bytes
+    const firstUpload = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+    const secondUpload = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+
+    // then both uploads resolve to BookDtos with the same contentHash
+    expect(secondUpload.thumbnail?.contentHash).toBe(firstUpload.thumbnail?.contentHash);
+    // and the gateway holds exactly one entry under that hash (the second put
+    // was a no-op by content hash — verified by reading back via get)
+    const stored = await fileStorage.get(firstUpload.thumbnail!.contentHash);
+    expect(stored).not.toBeNull();
+    expect(stored?.mimeType).toBe('image/png');
+  });
+
+  it('replaces book.thumbnail.contentHash when uploading different bytes for the same book', async () => {
+    // given a staff caller, a book, and two distinct byte payloads
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytesA = sampleThumbnailBytes({ extra: 4 });
+    const bytesB = sampleThumbnailBytes({ extra: 8 });
+
+    // when attachThumbnail runs first with bytesA then with bytesB
+    const afterA = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes: bytesA,
+      declaredMimeType: 'image/png',
+    });
+    const afterB = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes: bytesB,
+      declaredMimeType: 'image/png',
+    });
+
+    // then the saved book's thumbnail.contentHash reflects bytesB's hash, not bytesA's
+    expect(afterB.thumbnail?.contentHash).not.toBe(afterA.thumbnail?.contentHash);
+    expect(afterB.thumbnail?.byteLength).toBe(bytesB.byteLength);
+
+    // and a fresh findBook also reflects bytesB's hash (the metadata persisted)
+    const found = await facade.findBook(book.isbn);
+    expect(found.thumbnail?.contentHash).toBe(afterB.thumbnail?.contentHash);
+  });
+
+  it('runs validation before storage: oversize input throws InvalidThumbnailError and the gateway stays empty', async () => {
+    // given a staff caller, a book, and an oversize payload
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const oversize = new Uint8Array(2 * 1024 * 1024 + 1);
+    oversize.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+
+    // when / then attach with oversize bytes throws InvalidThumbnailError
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: oversize,
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(InvalidThumbnailError);
+
+    // and the gateway was never written to (validation runs before storage)
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+
+  it('runs validation before storage: unsupported mime throws InvalidThumbnailError and the gateway stays empty', async () => {
+    // given a staff caller, a book, and PDF bytes (unsupported)
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attach with PDF bytes throws InvalidThumbnailError
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: pdfBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(InvalidThumbnailError);
+
+    // and the gateway was never written to
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+
+  it('runs validation before storage: mime mismatch throws InvalidThumbnailError and the gateway stays empty', async () => {
+    // given a staff caller, a book, and PNG bytes declared as JPEG
+    const { facade, fileStorage } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then attach with mislabeled mime throws InvalidThumbnailError
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/jpeg',
+      }),
+    ).rejects.toThrow(InvalidThumbnailError);
+
+    // and the gateway was never written to
+    expect(fileStorage.putCallCount).toBe(0);
+  });
+});
+
+describe('readThumbnail', () => {
+  function buildScene() {
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      fileStorageGateway: fileStorage,
+    });
+    return { facade, fileStorage };
+  }
+
+  it('returns bytes byte-identical to what was attached, plus mimeType, contentHash, byteLength', async () => {
+    // given a book with a freshly-attached PNG thumbnail
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const attachedBytes = sampleThumbnailBytes();
+    const attached = await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes: attachedBytes,
+      declaredMimeType: 'image/png',
+    });
+
+    // when readThumbnail is called for that book
+    const read = await facade.readThumbnail(book.bookId);
+
+    // then the bytes are byte-identical to what was attached
+    expect(read.bytes).toEqual(attachedBytes);
+    // and the metadata matches what the attach returned
+    expect(read.mimeType).toBe('image/png');
+    expect(read.contentHash).toBe(attached.thumbnail!.contentHash);
+    expect(read.byteLength).toBe(attachedBytes.byteLength);
+  });
+
+  it('throws BookNotFoundError for an unknown bookId', async () => {
+    // given a catalog with no books
+    const { facade } = buildScene();
+
+    // when / then readThumbnail with an unknown bookId throws BookNotFoundError
+    await expect(facade.readThumbnail('unknown-book-id')).rejects.toThrow(BookNotFoundError);
+  });
+
+  it('throws ThumbnailNotFoundError for a known book with no thumbnail attached', async () => {
+    // given a book that has never had a thumbnail attached
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then readThumbnail throws ThumbnailNotFoundError
+    await expect(facade.readThumbnail(book.bookId)).rejects.toThrow(ThumbnailNotFoundError);
+  });
+
+  it('does not require authorization: a MEMBER-context caller can still read the thumbnail', async () => {
+    // given a book with an attached thumbnail (attached by staff, as the policy requires)
+    const { facade } = buildScene();
+    const book = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+    await facade.attachThumbnail(sampleStaffAuthUser(), book.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+
+    // when readThumbnail is invoked (it takes no authUser — reads are open by design)
+    // then it resolves successfully with the same byte content the staff caller attached
+    const read = await facade.readThumbnail(book.bookId);
+    expect(read.bytes).toEqual(bytes);
+    expect(read.mimeType).toBe('image/png');
+  });
+});
+
+describe('removeThumbnail', () => {
+  function buildScene() {
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      fileStorageGateway: fileStorage,
+    });
+    return { facade, fileStorage };
+  }
+
+  it('is a no-op when the book has no thumbnail: returns the book unchanged and never touches file storage', async () => {
+    // given a book with no thumbnail attached
+    const { facade, fileStorage } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const preState = await facade.findBook(added.isbn);
+
+    // when removeThumbnail is invoked against the same book
+    const returned = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // then the returned book matches the pre-state shape (no fields added or removed)
+    expect(returned).toEqual(preState);
+    // and a subsequent findBook returns the same shape — neither field added nor removed
+    const postState = await facade.findBook(added.isbn);
+    expect(postState).toEqual(preState);
+    // and file storage was never asked to remove anything
+    expect(fileStorage.removeCallCount).toBe(0);
+  });
+
+  it('returns a BookDto without the thumbnail field when the book had one', async () => {
+    // given a book with a thumbnail attached
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const withThumbnail = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    expect(withThumbnail.thumbnail).toBeDefined();
+
+    // when removeThumbnail is invoked
+    const returned = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // then the returned BookDto has no thumbnail field
+    expect(returned.thumbnail).toBeUndefined();
+    // and a subsequent findBook also returns a BookDto without the thumbnail field
+    const found = await facade.findBook(added.isbn);
+    expect(found.thumbnail).toBeUndefined();
+  });
+
+  it('calls fileStorage.remove(contentHash) exactly once when the book had a thumbnail', async () => {
+    // given a book with a thumbnail attached
+    const { facade, fileStorage } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const withThumbnail = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    const attachedHash = withThumbnail.thumbnail!.contentHash;
+
+    // when removeThumbnail runs
+    await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // then fileStorage.remove was called once with the attached contentHash
+    expect(fileStorage.removeCallCount).toBe(1);
+    expect(fileStorage.removedHashes).toEqual([attachedHash]);
+  });
+
+  it('after removeThumbnail, a subsequent readThumbnail throws ThumbnailNotFoundError', async () => {
+    // given a book with a thumbnail that gets removed
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // when / then readThumbnail throws ThumbnailNotFoundError
+    await expect(facade.readThumbnail(added.bookId)).rejects.toThrow(ThumbnailNotFoundError);
+  });
+
+  it('throws UnauthorizedRoleError for a MEMBER caller and does not touch file storage', async () => {
+    // given a MEMBER caller and a book in the catalog
+    const { facade, fileStorage } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then removeThumbnail throws UnauthorizedRoleError
+    await expect(
+      facade.removeThumbnail(sampleAuthUser({ role: 'MEMBER' }), added.bookId),
+    ).rejects.toThrow(UnauthorizedRoleError);
+
+    // and the gateway was never touched (auth runs before storage)
+    expect(fileStorage.removeCallCount).toBe(0);
+  });
+
+  it('throws UnauthorizedRoleError for an ACCOUNT caller and does not touch file storage', async () => {
+    // given an ACCOUNT caller and a book in the catalog
+    const { facade, fileStorage } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+
+    // when / then removeThumbnail throws UnauthorizedRoleError
+    await expect(
+      facade.removeThumbnail(sampleAuthUser({ role: 'ACCOUNT' }), added.bookId),
+    ).rejects.toThrow(UnauthorizedRoleError);
+
+    // and the gateway was never touched (auth runs before storage)
+    expect(fileStorage.removeCallCount).toBe(0);
+  });
+
+  it('throws BookNotFoundError for an unknown bookId', async () => {
+    // given a catalog with no books
+    const { facade } = buildScene();
+
+    // when / then removeThumbnail with an unknown bookId throws BookNotFoundError
+    await expect(
+      facade.removeThumbnail(sampleStaffAuthUser(), 'unknown-book-id'),
+    ).rejects.toThrow(BookNotFoundError);
+  });
+
+  it('completes the full lifecycle: attach → read (succeeds) → remove → read (throws ThumbnailNotFoundError)', async () => {
+    // given a book and a payload that will travel through the full lifecycle
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+
+    // step 1: attach succeeds and returns a BookDto with thumbnail metadata
+    const attached = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes,
+      declaredMimeType: 'image/png',
+    });
+    expect(attached.thumbnail).toBeDefined();
+
+    // step 2: read returns the same bytes the staff caller attached
+    const readAfterAttach = await facade.readThumbnail(added.bookId);
+    expect(readAfterAttach.bytes).toEqual(bytes);
+    expect(readAfterAttach.contentHash).toBe(attached.thumbnail!.contentHash);
+
+    // step 3: remove succeeds and clears the thumbnail off the returned book
+    const afterRemove = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+    expect(afterRemove.thumbnail).toBeUndefined();
+
+    // step 4: a second read throws ThumbnailNotFoundError — the bytes are gone
+    await expect(facade.readThumbnail(added.bookId)).rejects.toThrow(ThumbnailNotFoundError);
+  });
+});
+
+describe('attachThumbnail cache integration', () => {
+  function buildScene() {
+    const cache = new InMemoryBookCacheGateway();
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+      fileStorageGateway: fileStorage,
+    });
+    return { cache, fileStorage, facade };
+  }
+
+  it('writes the BookDto with the new thumbnail subobject directly into the cache (AC-5.1)', async () => {
+    // given a book in the catalog with an empty cache for its isbn
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    expect(await cache.get(added.isbn)).toBeNull();
+
+    // when a thumbnail is attached
+    const updated = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+
+    // then the cache directly holds the BookDto including the thumbnail subobject
+    const cached = await cache.get(added.isbn);
+    expect(cached).toEqual(updated);
+    expect(cached?.thumbnail).toEqual(updated.thumbnail);
+  });
+
+  it('makes a subsequent findBook(isbn) return the cached BookDto with the thumbnail (AC-5.5)', async () => {
+    // given a book with a freshly-attached thumbnail
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const attached = await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+
+    // when findBook is called for that isbn
+    const found = await facade.findBook(added.isbn);
+
+    // then it returns the BookDto with the same thumbnail subobject that attach returned
+    expect(found).toEqual(attached);
+    expect(found.thumbnail).toEqual(attached.thumbnail);
+  });
+
+  it('propagates the original error when cache.set throws and keeps fileStorage bytes intact (AC-5.4)', async () => {
+    // given a book in the catalog and a cache wrapper armed to throw on the next set
+    const innerCache = new InMemoryBookCacheGateway();
+    const throwingCache = new ThrowingOnceBookCacheGateway(innerCache);
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: throwingCache,
+      fileStorageGateway: fileStorage,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const bytes = sampleThumbnailBytes();
+    const expectedHash = createHash('sha256').update(bytes).digest('hex');
+    const armedError = new Error('redis SET failed during attachThumbnail');
+    throwingCache.armFailureOnNextSet(armedError);
+
+    // when attachThumbnail fires (parse → put → saveBook → cache.set throws)
+    // then the exact armed error surfaces to the caller
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+        bytes,
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(armedError);
+
+    // and the bytes already in fileStorage are NOT rolled back (documented Phase 1 behavior)
+    const stored = await fileStorage.get(expectedHash);
+    expect(stored).not.toBeNull();
+    expect(stored?.mimeType).toBe('image/png');
+    expect(stored?.bytes).toEqual(bytes);
+  });
+
+  it('keeps the book metadata write durable when cache.set throws during attachThumbnail (AC-5.4)', async () => {
+    // given a book and a cache armed to throw once on set
+    const innerCache = new InMemoryBookCacheGateway();
+    const throwingCache = new ThrowingOnceBookCacheGateway(innerCache);
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: throwingCache,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('redis SET failed mid-attach');
+    throwingCache.armFailureOnNextSet(armedError);
+
+    // when attachThumbnail throws on the cache.set step
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(armedError);
+
+    // then the repo write was durable — a follow-up findBook returns the BookDto with the thumbnail
+    // (the throwing wrapper was single-shot; the second findBook flows through cleanly)
+    const found = await facade.findBook(added.isbn);
+    expect(found.thumbnail).toBeDefined();
+    expect(found.thumbnail?.mimeType).toBe('image/png');
+  });
+
+  it('throws and does not write the book repository when fileStorage.put fails (AC-5.7)', async () => {
+    // given a book, an in-memory cache, and a fileStorage armed to throw once on put
+    const cache = new InMemoryBookCacheGateway();
+    const innerStorage = new InMemoryFileStorageGateway();
+    const throwingStorage = new ThrowingOnceFileStorageGateway(innerStorage);
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+      fileStorageGateway: throwingStorage,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    const armedError = new Error('s3 PUT failed during attachThumbnail');
+    throwingStorage.armFailureOnNextPut(armedError);
+
+    // when attachThumbnail fires (parse → put throws before repo or cache are touched)
+    // then the exact armed error surfaces to the caller
+    await expect(
+      facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+        bytes: sampleThumbnailBytes(),
+        declaredMimeType: 'image/png',
+      }),
+    ).rejects.toThrow(armedError);
+
+    // and the repo was not written — findBook still returns the BookDto without a thumbnail
+    const found = await facade.findBook(added.isbn);
+    expect(found.thumbnail).toBeUndefined();
+
+    // and the cache was not populated by attachThumbnail (only by the subsequent findBook above)
+    expect(found).toEqual(added);
+  });
+});
+
+describe('removeThumbnail cache integration', () => {
+  function buildScene() {
+    const cache = new InMemoryBookCacheGateway();
+    const fileStorage = new CountingFileStorageGateway();
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: cache,
+      fileStorageGateway: fileStorage,
+    });
+    return { cache, fileStorage, facade };
+  }
+
+  it('writes the BookDto without the thumbnail field directly into the cache (AC-5.2)', async () => {
+    // given a book with a thumbnail attached (cache already holds the with-thumbnail BookDto)
+    const { cache, facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    expect((await cache.get(added.isbn))?.thumbnail).toBeDefined();
+
+    // when removeThumbnail is invoked
+    const returned = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // then the cache directly holds the BookDto with no thumbnail field
+    const cached = await cache.get(added.isbn);
+    expect(cached).toEqual(returned);
+    expect(cached?.thumbnail).toBeUndefined();
+  });
+
+  it('makes a subsequent findBook(isbn) return the cached BookDto without a thumbnail (AC-5.6)', async () => {
+    // given a book whose thumbnail has been attached and then removed
+    const { facade } = buildScene();
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    await facade.attachThumbnail(sampleStaffAuthUser(), added.bookId, {
+      bytes: sampleThumbnailBytes(),
+      declaredMimeType: 'image/png',
+    });
+    const afterRemove = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+
+    // when findBook is called
+    const found = await facade.findBook(added.isbn);
+
+    // then it returns the BookDto without a thumbnail (matches the remove return value)
+    expect(found).toEqual(afterRemove);
+    expect(found.thumbnail).toBeUndefined();
+  });
+
+  it('does not call cache.set on the no-op path when the book has no thumbnail', async () => {
+    // given a book with no thumbnail attached and a cache armed to throw on the next set
+    const innerCache = new InMemoryBookCacheGateway();
+    const throwingCache = new ThrowingOnceBookCacheGateway(innerCache);
+    const facade = createCatalogFacade({
+      newId: sequentialIds('book'),
+      bookCacheGateway: throwingCache,
+    });
+    const added = await facade.addBook(sampleNewBookWithIsbn('978-0134685991'));
+    throwingCache.armFailureOnNextSet(new Error('cache.set must NOT be called on the no-op path'));
+
+    // when removeThumbnail is invoked on the book with no thumbnail
+    // then it resolves to the unchanged book (the arming was never tripped)
+    const returned = await facade.removeThumbnail(sampleStaffAuthUser(), added.bookId);
+    expect(returned).toEqual(added);
+
+    // and the arming is still live — proving cache.set was never called on the no-op path.
+    // A follow-through call that does set (e.g. updateBook) would surface the armed error.
+    await expect(
+      facade.updateBook(added.bookId, sampleUpdateBook({ title: 'Trip the arm' })),
+    ).rejects.toThrow('cache.set must NOT be called on the no-op path');
+  });
+});
+
+describe('ThrowingOnceFileStorageGateway (declared for slice 5; smoke test only)', () => {
+  it('throws the armed error exactly once on the next put, then delegates normally', async () => {
+    // given a wrapper armed with a single-shot error on put
+    const inner = new InMemoryFileStorageGateway();
+    const wrapper = new ThrowingOnceFileStorageGateway(inner);
+    const armed = new Error('s3 PUT failed');
+    wrapper.armFailureOnNextPut(armed);
+
+    // when the first put fires, then the armed error surfaces and arming clears
+    await expect(wrapper.put('hash-1', new Uint8Array([1, 2, 3]), 'image/png')).rejects.toThrow(
+      armed,
+    );
+
+    // and the second put succeeds (arming was single-shot and self-clearing)
+    await expect(
+      wrapper.put('hash-2', new Uint8Array([4, 5, 6]), 'image/png'),
+    ).resolves.toMatchObject({ contentHash: 'hash-2', alreadyExisted: false });
+  });
+});
+
 // --- ThrowingOnceIsbnLookupGateway -----------------------------------------
 // Spec-local wrapper that decorates a real in-memory gateway and throws on the
 // next findByIsbn call when armed. Mirrors ThrowingOnceReservationRepository in
@@ -1107,5 +1993,58 @@ class ThrowingOnceBookCacheGateway implements BookCacheGateway {
       throw error;
     }
     return this.delegate.evict(isbn);
+  }
+}
+
+// --- ThrowingOnceFileStorageGateway ----------------------------------------
+// Spec-local wrapper that decorates a real in-memory file-storage gateway and
+// throws once on the next put/get/remove call when armed. Declared in slice 3
+// to lock the shape; used by slice 5 to assert that a fileStorage.put failure
+// during attachThumbnail propagates and does not write to the book repository.
+// Mirrors ThrowingOnceBookCacheGateway above. Not exported from any barrel.
+class ThrowingOnceFileStorageGateway implements FileStorageGateway {
+  private armedPutError: Error | null = null;
+  private armedGetError: Error | null = null;
+  private armedRemoveError: Error | null = null;
+
+  constructor(private readonly delegate: FileStorageGateway) {}
+
+  armFailureOnNextPut(error: Error): void {
+    this.armedPutError = error;
+  }
+
+  armFailureOnNextGet(error: Error): void {
+    this.armedGetError = error;
+  }
+
+  armFailureOnNextRemove(error: Error): void {
+    this.armedRemoveError = error;
+  }
+
+  async put(contentHash: string, bytes: Uint8Array, mimeType: string): Promise<PutResult> {
+    if (this.armedPutError) {
+      const error = this.armedPutError;
+      this.armedPutError = null;
+      throw error;
+    }
+    return this.delegate.put(contentHash, bytes, mimeType);
+  }
+
+  async get(contentHash: string): Promise<StoredFile | null> {
+    if (this.armedGetError) {
+      const error = this.armedGetError;
+      this.armedGetError = null;
+      throw error;
+    }
+    return this.delegate.get(contentHash);
+  }
+
+  async remove(contentHash: string): Promise<void> {
+    if (this.armedRemoveError) {
+      const error = this.armedRemoveError;
+      this.armedRemoveError = null;
+      throw error;
+    }
+    return this.delegate.remove(contentHash);
   }
 }
